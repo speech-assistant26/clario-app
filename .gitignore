@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Env
+.env
+backend/.env
+frontend/.env
+
+# Node / Vite
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data artifacts — the 132 MB npz is large; the mel_mean/std it holds are also
+# baked into config.py, so it's safe to keep this out of git.
+data/phoneme_dataset.npz
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

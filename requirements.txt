@@ -1,0 +1,20 @@
+# Dependencies for the Hugging Face Gradio Space (root app.py).
+# gradio itself is installed by HF from `sdk_version` in README.md.
+
+# CPU-only torch (the +cpu build lives on the PyTorch CPU index; this forces
+# it instead of the ~2 GB CUDA wheel from PyPI).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+torchaudio==2.2.2+cpu
+
+# TensorFlow 2.16 bundles Keras 3 (needed to load the .keras model).
+tensorflow-cpu==2.16.1
+
+transformers==4.44.2
+librosa==0.10.2.post1
+soundfile==0.12.1
+numpy==1.26.4
+scipy==1.13.1
+matplotlib==3.9.2
+pydantic==2.10.4
+pydantic-settings==2.7.1

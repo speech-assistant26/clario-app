@@ -1,0 +1,21 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- ML / audio (must match the training/inference stack) ---
+# TensorFlow 2.16 bundles Keras 3, required to load the .keras model.
+# CPU build: no CUDA payload, much smaller download.
+tensorflow-cpu==2.16.1
+# torch/torchaudio are installed in the Dockerfile from the PyTorch CPU index
+# (the default PyPI wheel bundles ~2 GB of CUDA libs). For a LOCAL install run:
+#   pip install torch==2.2.2 torchaudio==2.2.2 --index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
+torchaudio==2.2.2
+transformers==4.44.2
+librosa==0.10.2.post1
+soundfile==0.12.1
+numpy==1.26.4
+scipy==1.13.1

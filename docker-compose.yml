@@ -1,0 +1,53 @@
+# One-command run for the whole Clario stack (no local Python/Node/espeak needed).
+#
+#   docker compose up --build
+#
+# Then open http://localhost:8080
+#
+# The trained model is mounted read-only from ./models. Drop
+# phoneme_dataset.npz there too for training-exact normalization.
+
+services:
+  backend:
+    build: ./backend
+    container_name: clario-backend
+    environment:
+      CLARIO_ERROR_THRESHOLD: "0.50"
+      CLARIO_DEVICE: "cpu"
+      CLARIO_CORS_ORIGINS: "*"
+      CLARIO_DATASET_NPZ_PATH: "/data/phoneme_dataset.npz"
+    volumes:
+      - ./models:/models:ro
+      - ./data:/data:ro                     # normalization stats (mel_mean/std)
+      - hf-cache:/root/.cache/huggingface   # persist the wav2vec2 download
+    ports:
+      # Host 8000 is used by other services on this machine; expose on 8010.
+      - "8010:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: clario-frontend
+    depends_on:
+      - backend
+    ports:
+      # Host 8080 is taken; serve the web app on 3000.
+      - "3000:80"
+    restart: unless-stopped
+
+  # Optional: expose the app on a public HTTPS URL with no account/card.
+  # Enable with:  docker compose --profile share up -d
+  # Then read the https://<random>.trycloudflare.com link from its logs:
+  #   docker logs clario-tunnel | grep trycloudflare
+  # The link stays alive only while this machine + containers are running.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: clario-tunnel
+    profiles: ["share"]
+    depends_on:
+      - frontend
+    command: tunnel --no-autoupdate --url http://frontend:80
+    restart: unless-stopped
+
+volumes:
+  hf-cache:

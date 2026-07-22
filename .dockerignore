@@ -1,0 +1,15 @@
+# Build-context excludes for the combined root Dockerfile.
+notebooks/
+data/
+**/node_modules/
+**/dist/
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/.env
+.git/
+*.md
+backend/Dockerfile
+frontend/Dockerfile
+frontend/nginx.conf
+docker-compose.yml
