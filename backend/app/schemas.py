@@ -13,6 +13,19 @@ class PhonemeResult(BaseModel):
     align_score: float = Field(..., description="Forced-alignment confidence, 0..1")
 
 
+class WordCheck(BaseModel):
+    """Outcome of the Whisper target-word sanity check.
+
+    A mismatch is advisory, not fatal: analysis proceeds either way and the
+    client is expected to surface `warning` alongside the results.
+    """
+
+    checked: bool = Field(..., description="False if verification is disabled or unavailable")
+    matched: bool = Field(..., description="True if the recording plausibly contains the target word")
+    heard: str | None = Field(None, description="What the ASR transcribed, if it ran")
+    similarity: float | None = Field(None, description="Best similarity to the target, 0..1")
+
+
 class AnalyzeResponse(BaseModel):
     target_word: str
     phonemes: list[PhonemeResult]
@@ -24,6 +37,12 @@ class AnalyzeResponse(BaseModel):
     # Downsampled mono waveform (-1..1) for drawing on the client, plus its rate.
     waveform: list[float]
     waveform_rate: int
+    # Advisory only. Set when the recording does not sound like the target word;
+    # the results are still returned and remain valid for the phonemes aligned.
+    warning: str | None = Field(
+        None, description="Non-blocking advisory message to show with the results"
+    )
+    word_check: WordCheck = Field(..., description="Detail behind `warning`")
 
 
 class HealthResponse(BaseModel):

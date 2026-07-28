@@ -21,7 +21,7 @@ from .audio import assess_quality, downsample_for_plot, load_and_trim
 from .config import get_settings
 from .phonemes import espeak_available
 from .pipeline import get_pipeline
-from .schemas import AnalyzeResponse, HealthResponse, PhonemeResult
+from .schemas import AnalyzeResponse, HealthResponse, PhonemeResult, WordCheck
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("clario")
@@ -115,14 +115,22 @@ async def analyze(
         log.warning("Word verification failed, continuing without it: %s", exc)
         verification = {"checked": False, "matched": True, "heard": None, "similarity": None}
 
+    # A word mismatch is ADVISORY, not fatal. Blocking the analysis here was the
+    # wrong call for the target population: severely dysarthric speech is exactly
+    # what a small ASR model mis-transcribes, so a hard 422 withheld feedback from
+    # the users who need it most. We now warn and analyse anyway — the phoneme
+    # verdicts stand on their own, and the user decides what to make of them.
+    warning: str | None = None
     if verification["checked"] and not verification["matched"]:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"It sounds like you said “{verification['heard']}”, not "
-                f"“{target_word}”. Please try again saying the target word clearly."
-            ),
+        heard = verification.get("heard")
+        warning = (
+            f"This doesn’t sound like “{target_word}”"
+            + (f" — it sounded more like “{heard}”." if heard else ".")
+            + " The results below may be less reliable; re-record if you meant to"
+            " say a different word."
         )
+        log.info("Word mismatch (advisory): target=%r heard=%r similarity=%s",
+                 target_word, heard, verification.get("similarity"))
 
     try:
         results = pipeline.analyze(wave, target_word, error_threshold=error_threshold)
@@ -154,6 +162,8 @@ async def analyze(
         error_threshold=error_threshold if error_threshold is not None else settings.error_threshold,
         waveform=downsample_for_plot(wave),
         waveform_rate=settings.sample_rate,
+        warning=warning,
+        word_check=WordCheck(**verification),
     )
 
 

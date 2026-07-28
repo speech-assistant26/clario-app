@@ -152,6 +152,13 @@ export default function App() {
 
         {result && (
           <section className="card result-card">
+            {result.warning && (
+              <p className="warning" role="status">
+                <span className="warning-icon" aria-hidden="true">⚠</span>
+                <span>{result.warning}</span>
+              </p>
+            )}
+
             <div className="result-head">
               <ScoreRing
                 accuracy={result.accuracy}

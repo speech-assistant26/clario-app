@@ -238,6 +238,23 @@ body {
   font-size: 14px;
 }
 
+/* Advisory, not fatal: the results below it are still shown. Amber rather than
+   red so it never reads as "your attempt was rejected". */
+.warning {
+  margin: 0 0 16px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  color: #fde68a;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.warning-icon { flex: none; font-size: 15px; line-height: 1.45; }
+
 /* ---------- results ---------- */
 .result-head { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
 .result-meta h2 { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.02em; }
