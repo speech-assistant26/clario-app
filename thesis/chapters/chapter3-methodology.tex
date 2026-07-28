@@ -1,0 +1,807 @@
+% ============================================================
+% CHAPTER 3 - RESEARCH METHODOLOGY
+% ============================================================
+\chapter{Research Methodology}
+\label{ch:methodology}
+
+\section{Introduction}
+
+This chapter sets out how the research was conducted. Section~\ref{sec:approach}
+states the research approach and the overall process. Section~\ref{sec:dataset}
+describes the corpus and the pairing scheme. Sections~\ref{sec:g2p} to
+\ref{sec:features} describe the three stages that convert a pair of recordings
+into labelled feature patches: grapheme-to-phoneme conversion, matched-pair
+forced alignment and log-mel feature extraction.
+Section~\ref{sec:labelling} --- the methodological core of the dissertation ---
+presents the two labelling strategies that were attempted, explains why the
+first failed and derives the second. Sections~\ref{sec:split} to
+\ref{sec:metrics} cover the data split, the training protocol, the architecture
+comparison design and the evaluation metrics. Section~\ref{sec:tools} lists the
+tools and the experimental environment, and Section~\ref{sec:ethics} addresses
+ethical considerations.
+
+\section{Research Approach}
+\label{sec:approach}
+
+The work follows an \emph{experimental, design-science} approach: an artefact
+(the detection model and the surrounding system) is constructed, evaluated
+against measurable criteria, diagnosed when it fails, and redesigned. This is
+not incidental to the presentation --- the central result of the dissertation
+was obtained precisely by the diagnose-and-redesign cycle applied to the
+labelling scheme.
+
+The process comprised the seven stages shown in
+Figure~\ref{fig:methodology-overview}. The dashed arrow marks the feedback path
+that produced the principal contribution: qualitative inference-time evaluation
+revealed that healthy control recordings were being flagged as full of errors,
+which invalidated the labelling stage and forced its redesign.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=8mm and 10mm]
+  \node[block] (lit)   {1. Literature review \& gap analysis};
+  \node[block, below=of lit] (data)  {2. Corpus selection \& pairing};
+  \node[block, below=of data] (align) {3. G2P + matched-pair forced alignment};
+  \node[block, below=of align] (feat) {4. Log-mel feature extraction};
+  \node[block, below=of feat, fill=orange!12] (label) {5. Label derivation \\ (Method 1 $\rightarrow$ Method 2)};
+  \node[block, below=of label] (train) {6. Model training \& architecture comparison};
+  \node[block, below=of train] (eval)  {7. Evaluation \& deployment};
+
+  \draw[arrow] (lit)   -- (data);
+  \draw[arrow] (data)  -- (align);
+  \draw[arrow] (align) -- (feat);
+  \draw[arrow] (feat)  -- (label);
+  \draw[arrow] (label) -- (train);
+  \draw[arrow] (train) -- (eval);
+
+  \draw[dashedarrow] (eval.east) -- ++(2.8,0) |- (label.east);
+  \node[font=\scriptsize, align=center, anchor=west]
+        at ([xshift=3.0cm, yshift=1.6cm]eval.east)
+        {control speech\\flagged as error};
+\end{tikzpicture}
+\caption[Research methodology overview]{Overview of the research process. The
+dashed feedback path represents the empirical finding that drove the
+redesign of the labelling stage from Method~1 to Method~2.}
+\label{fig:methodology-overview}
+\end{figure}
+
+\section{Overview of the Proposed Pipeline}
+\label{sec:pipeline-overview}
+
+Figure~\ref{fig:methodology-overview} describes the \emph{research process};
+Figure~\ref{fig:method-pipeline} describes the \emph{method} itself. It is the
+complete deep-learning pipeline developed in this work, from a pair of raw
+waveforms to a trained per-phoneme error classifier, and every stage in it is
+specified in detail in the sections that follow. Read left to right and top to
+bottom, it comprises three bands.
+
+\textbf{The data pipeline} (top band, Sections~\ref{sec:dataset} to
+\ref{sec:labelling}) turns audio into supervised training examples. Its two
+distinctive steps are the alignment of \emph{both} recordings of a pair to a
+single control-derived target sequence, which is what makes phoneme $i$ of the
+impaired production comparable with phoneme $i$ of the healthy one, and the
+control-baseline labelling rule that derives the ground truth from that
+comparison. The latter is the contribution of the dissertation and is
+highlighted in the figure.
+
+\textbf{The network} (middle band, Section~\ref{sec:network-design}) consumes
+one $64 \times 32$ log-mel patch per phoneme. Two convolutional blocks reduce
+the patch to a $16 \times 8 \times 32$ tensor of local spectro-temporal
+features; a time-distributed flatten reinterprets that as a 16-step sequence of
+256-dimensional vectors; a bidirectional LSTM integrates the sequence in both
+directions; and a two-unit softmax emits $P(\text{error})$. The tensor shape is
+annotated beneath each stage so the reduction can be followed end to end.
+
+\textbf{Training and evaluation} (bottom band,
+Sections~\ref{sec:training-protocol} to \ref{sec:metrics}) fit the network on
+the class-balanced training partition and assess it on the untouched held-out
+partition. The pipeline's outputs are the two artefacts that the deployed
+system consumes --- the trained network and the pair of global normalisation
+constants --- together with the evaluation evidence reported in
+Chapter~\ref{ch:results}.
+
+The single most important structural property of the figure is that the
+normalisation constants $\mu$ and $\sigma$ are an \emph{output} of the
+pipeline, on the same footing as the network weights. Because the features are
+in decibels and therefore level-dependent, a system that scales its input
+differently from training is a different model, regardless of which weights it
+loads.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[font=\scriptsize]
+  \tikzset{
+    pb/.style   = {rectangle, rounded corners=2pt, draw=black!65, fill=blue!7,
+                   text width=2.95cm, align=center, minimum height=1.30cm,
+                   font=\scriptsize, inner sep=3pt},
+    nb/.style   = {pb, fill=orange!10},
+    tb/.style   = {pb, fill=green!10, text width=4.30cm},
+    hb/.style   = {pb, fill=red!12},
+    band/.style = {draw=black!55, dashed, rounded corners=4pt},
+    bt/.style   = {font=\small\bfseries, anchor=west},
+    ar/.style   = {-{Stealth[length=2.4mm]}, thick, draw=black!70},
+    nt/.style   = {font=\tiny, text=black!60, align=center},
+  }
+
+  % ===================== BAND 1 : DATA PIPELINE =====================
+  \draw[band, fill=blue!2] (-0.35,0.62) rectangle (15.05,-5.60);
+  \node[bt] at (-0.15,0.25)
+       {1 --- DATA PIPELINE \normalfont\scriptsize(\S\ref{sec:dataset}--\S\ref{sec:labelling})};
+
+  \node[pb] (d1) at (1.90,-1.15)  {\textbf{paired input}\\dysarthric $x_d$, control $x_c$,\\control transcript $w$};
+  \node[pb] (d2) at (5.60,-1.15)  {\textbf{preprocess}\\16\,kHz mono,\\trim silence once};
+  \node[pb] (d3) at (9.30,-1.15)  {\textbf{target sequence}\\espeak-ng G2P on $w$,\\strip stress marks};
+  \node[pb] (d4) at (13.00,-1.15) {\textbf{forced alignment}\\wav2vec2 CTC, \emph{both}\\recordings to same target};
+
+  \node[pb] (d5) at (1.90,-3.95)  {\textbf{feature extraction}\\$\pm20$\,ms context, 64 mel\\bands, dB, 32 frames};
+  \node[pb] (d6) at (5.60,-3.95)  {\textbf{deviation}\\$D_i = \overline{|d_i - c_i|}$\\Eq.~\eqref{eq:distance}};
+  \node[hb] (d7) at (9.30,-3.95)  {\textbf{control-baseline}\\\textbf{labelling (Method 2)}\\$\tau = 1.20$\,dB, Eq.~\eqref{eq:method2}};
+  \node[pb] (d8) at (13.00,-3.95) {\textbf{split \& balance}\\80/20 stratified,\\upsample train only};
+
+  \foreach \s/\t in {d1/d2, d2/d3, d3/d4, d5/d6, d6/d7, d7/d8} \draw[ar] (\s) -- (\t);
+  \draw[ar] (d4.south) -- (13.00,-2.55) -- (1.90,-2.55) -- (d5.north);
+
+  \node[nt, anchor=west] at (-0.15,-5.25)
+       {98{,}306 phoneme patches $\cdot$ 14{,}746 error / 83{,}560 correct $\cdot$ global $z$-score $\mu = -2.41$\,dB, $\sigma = 10.22$\,dB $\cdot$ train 133{,}694 (balanced), test 19{,}662 (natural)};
+
+  \draw[ar] (7.35,-5.60) -- (7.35,-6.25)
+        node[midway, right, nt, anchor=west] {one $64 \times 32 \times 1$ patch per phoneme};
+
+  % ===================== BAND 2 : NETWORK =====================
+  \draw[band, fill=orange!2] (-0.35,-6.25) rectangle (15.05,-12.35);
+  \node[bt] at (-0.15,-6.60)
+       {2 --- CNN--BiLSTM CLASSIFIER \normalfont\scriptsize(\S\ref{sec:network-design}, 415{,}810 parameters)};
+
+  \node[nb] (n1) at (1.90,-8.05)  {\textbf{input}\\log-mel patch};
+  \node[nb] (n2) at (5.60,-8.05)  {\textbf{conv block 1}\\Conv2D 16 @ $3{\times}3$, ReLU\\BN, MaxPool, Drop 0.3};
+  \node[nb] (n3) at (9.30,-8.05)  {\textbf{conv block 2}\\Conv2D 32 @ $3{\times}3$, ReLU\\BN, MaxPool, Drop 0.3};
+  \node[nb] (n4) at (13.00,-8.05) {\textbf{reshape}\\TimeDistributed\\Flatten};
+
+  \node[nb] (n5) at (3.70,-10.85) {\textbf{BiLSTM}\\128 units per direction\\Drop 0.3};
+  \node[nb] (n6) at (7.90,-10.85) {\textbf{dense}\\64, ReLU\\Drop 0.3};
+  \node[nb] (n7) at (12.10,-10.85) {\textbf{output}\\Dense 2, softmax\\$P(\text{error})$};
+
+  \foreach \s/\t in {n1/n2, n2/n3, n3/n4, n5/n6, n6/n7} \draw[ar] (\s) -- (\t);
+  % dropped at x = 14.40 so the vertical run clears the shape annotations below
+  \draw[ar] (n4.south -| 14.40,0) -- (14.40,-9.75) -- (3.70,-9.75) -- (n5.north);
+
+  \node[nt] at (1.90,-9.20)   {$64{\times}32{\times}1$};
+  \node[nt] at (5.60,-9.20)   {$32{\times}16{\times}16$};
+  \node[nt] at (9.30,-9.20)   {$16{\times}8{\times}32$};
+  \node[nt] at (12.70,-9.20)  {$16{\times}256$};
+  \node[nt] at (3.70,-11.90)  {$256$};
+  \node[nt] at (7.90,-11.90)  {$64$};
+  \node[nt] at (12.10,-11.90) {$2$};
+
+  \draw[ar] (7.35,-12.35) -- (7.35,-13.00);
+
+  % ===================== BAND 3 : TRAINING & EVALUATION =====================
+  \draw[band, fill=green!3] (-0.35,-13.00) rectangle (15.05,-15.95);
+  \node[bt] at (-0.15,-13.33)
+       {3 --- TRAINING \& EVALUATION \normalfont\scriptsize(\S\ref{sec:training-protocol}--\S\ref{sec:metrics})};
+
+  \node[tb] (t1) at (2.55,-14.70) {\textbf{training}\\Adam, categorical cross-entropy,\\batch 32, $\le 30$ epochs,\\early stopping patience 5};
+  \node[tb] (t2) at (7.60,-14.70) {\textbf{artefacts}\\trained CNN--BiLSTM\\$+$ normalisation constants $\mu,\sigma$};
+  \node[tb] (t3) at (12.65,-14.70) {\textbf{evaluation}\\accuracy, error precision/recall/$F_1$,\\per-phoneme profile,\\control-vs-dysarthric separation};
+
+  \draw[ar] (t1) -- (t2);
+  \draw[ar] (t2) -- (t3);
+
+  % ===================== LEGEND =====================
+  \fill[red!12, draw=black!65] (0.10,-16.75) rectangle (0.45,-16.51);
+  \node[nt, anchor=west] at (0.55,-16.63)
+       {contribution of this work: the ground truth is anchored to healthy control speech, not to a pooled percentile};
+\end{tikzpicture}}
+\caption[Proposed deep-learning pipeline]{The proposed pipeline, end to end.
+Band~1 converts a pair of recordings into labelled log-mel patches; band~2 is
+the CNN--BiLSTM classifier, annotated with the tensor shape at each stage;
+band~3 fits and assesses it. The highlighted stage is the control-baseline
+labelling rule that distinguishes this method from the global-percentile
+alternative it replaced.}
+\label{fig:method-pipeline}
+\end{figure}
+
+\section{Dataset}
+\label{sec:dataset}
+
+\subsection{Source corpus}
+
+The UASpeech corpus \cite{kim2008dysarthric} was selected for the reason given
+in Section~\ref{sec:lit-corpora}: it is the largest publicly available English
+corpus that contains \emph{matched} dysarthric and healthy-control productions
+of the same isolated words. A noise-reduced distribution of the corpus was used
+so that the log-mel deviation between a dysarthric token and its control
+counterpart reflects articulatory difference rather than differences in the
+recording noise floor.
+
+\subsection{Pairing}
+
+The unit of the experiment is a \emph{pair}: one dysarthric recording and one
+control recording of the same target word. A transcript index was prepared in
+advance, in which every row supplies four fields: the path to the dysarthric
+audio, the path to the control audio, the transcript of the dysarthric
+recording and the transcript of the control recording. Ten thousand such pairs
+were used.
+
+\subsection{Choice of alignment target}
+
+A pair provides two candidate transcripts, and the choice between them is
+consequential.
+
+The transcript obtained from the \emph{dysarthric} recording is a transcription
+of what was actually produced --- including its errors. Aligning the dysarthric
+audio to that transcript would place phoneme boundaries around the sounds that
+were produced, thereby \emph{concealing} the very deviations the system is
+supposed to detect. Worse, the two recordings of a pair would then be aligned
+to different symbol sequences, and the correspondence between phoneme $i$ of one
+and phoneme $i$ of the other --- the correspondence on which the entire
+distance-based labelling scheme rests --- would be lost.
+
+The transcript obtained from the \emph{control} recording is a transcription of
+clear speech and is therefore the best available proxy for the \emph{intended}
+target word. It is used as the alignment target for \emph{both} recordings of
+the pair. Phoneme $i$ of the dysarthric alignment and phoneme $i$ of the control
+alignment are then, by construction, two attempts at the same intended sound,
+and their acoustic distance is a meaningful measure of how far the impaired
+attempt fell from a clear realisation. This decision is illustrated in
+Figure~\ref{fig:matched-alignment}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=7mm and 14mm]
+  \node[data] (ctrltr) {control transcript \\ \texttt{"shift"}};
+  \node[block, below=10mm of ctrltr] (g2p) {espeak-ng G2P};
+  \node[data, below=7mm of g2p, fill=yellow!14] (seq)
+        {target phoneme sequence \\ \ph{ʃ}\,\ph{ɪ}\,\ph{f}\,\ph{t}};
+
+  \node[data, left=26mm of seq] (dysaud) {dysarthric audio};
+  \node[data, right=26mm of seq] (ctrlaud) {control audio};
+
+  \node[block, below=10mm of dysaud] (dysal) {forced align};
+  \node[block, below=10mm of ctrlaud] (ctrlal) {forced align};
+
+  \node[data, below=7mm of dysal] (dysseg) {segments $d_1 \dots d_n$};
+  \node[data, below=7mm of ctrlal] (ctrlseg) {segments $c_1 \dots c_n$};
+
+  \node[block, below=42mm of seq, fill=red!8] (dist)
+        {per-phoneme distance \\ $D_i = \lVert d_i - c_i \rVert_1$};
+
+  \draw[arrow] (ctrltr) -- (g2p);
+  \draw[arrow] (g2p) -- (seq);
+  \draw[arrow] (seq.west) -- ++(-1.0,0) |- (dysal.east);
+  \draw[arrow] (seq.east) -- ++(1.0,0)  |- (ctrlal.west);
+  \draw[arrow] (dysaud) -- (dysal);
+  \draw[arrow] (ctrlaud) -- (ctrlal);
+  \draw[arrow] (dysal) -- (dysseg);
+  \draw[arrow] (ctrlal) -- (ctrlseg);
+  \draw[arrow] (dysseg.south) |- (dist.west);
+  \draw[arrow] (ctrlseg.south) |- (dist.east);
+\end{tikzpicture}
+\caption[Matched-pair alignment]{Matched-pair alignment. Both recordings are
+aligned to the \emph{same} canonical phoneme sequence derived from the control
+transcript, guaranteeing that segment $d_i$ and segment $c_i$ are two attempts
+at the same intended sound.}
+\label{fig:matched-alignment}
+\end{figure}
+
+\section{Grapheme-to-Phoneme Conversion}
+\label{sec:g2p}
+
+The target word is converted to an IPA phoneme sequence by invoking the
+\texttt{espeak-ng} binary directly:
+
+\begin{center}
+\texttt{espeak-ng -q --ipa -v en-us <word>}
+\end{center}
+
+Three post-processing steps are applied. Primary stress (\texttt{U+02C8}),
+secondary stress (\texttt{U+02CC}) and the length mark (\texttt{U+02D0}) are
+stripped, because these diacritics are suprasegmental annotations that are not
+members of the alignment model's phone vocabulary. The remaining string is then
+split into individual symbols, and any symbol not present in the alignment
+model's vocabulary is discarded.
+
+The \texttt{espeak-ng} \emph{binary} is invoked through a subprocess rather than
+through the \texttt{phonemizer} Python wrapper. This is a practical rather than
+a scientific decision: \texttt{phonemizer} copies the shared library into a
+temporary directory before loading it, which fails on execution environments
+that mount the temporary filesystem \texttt{noexec} --- including the Kaggle
+notebook environment used for training. Calling the installed binary in place
+avoids the problem entirely, and the identical code path is used in training and
+in the deployed service, which eliminates a class of train--serve skew.
+
+A start-up self-check verifies that the toolchain is intact before any data is
+processed: the word ``well'' is converted and the result checked to be non-empty
+and to intersect the alignment model's vocabulary. The check confirmed
+\ph{w}\,\ph{ɛ}\,\ph{l}, all three symbols present in the vocabulary.
+
+\section{Forced Alignment}
+\label{sec:alignment}
+
+Alignment uses the multilingual phone recogniser
+\pth{facebook/wav2vec2-lv-60-espeak-cv-ft} \cite{xu2022simple} as an emission
+model, followed by CTC forced alignment as formalised in
+Equation~\eqref{eq:ctc-align}.
+
+The procedure for one recording is as follows.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Load and trim.} The waveform is loaded at 16\,kHz mono, and
+        leading and trailing silence is removed with a threshold of
+        $20$\,dB below the peak. Trimming is performed \emph{once}, and every
+        subsequent operation --- alignment, cropping and, in the deployed
+        application, waveform display --- uses the trimmed signal. This
+        single-timebase discipline was introduced after an early defect in
+        which alignment timestamps computed on the trimmed signal were drawn
+        against the untrimmed waveform, displacing the phoneme bands in the
+        user interface.
+  \item \textbf{Emission.} The waveform is passed through the frozen wav2vec2
+        CTC model and a log-softmax is taken over the vocabulary axis, yielding
+        $\log P(k \mid t)$ for $T$ frames.
+  \item \textbf{Alignment.} \texttt{torchaudio.functional.forced\_align}
+        computes the optimal frame path of Equation~\eqref{eq:ctc-align} for the
+        target token sequence, and \texttt{merge\_tokens} collapses that path
+        into one span per target symbol, each with a mean posterior confidence.
+  \item \textbf{Timebase conversion.} Frame indices are converted to seconds
+        with the ratio
+        $r = N_{\text{samples}} / (T \cdot f_s)$,
+        giving $(p_i, t^{\text{start}}_i, t^{\text{end}}_i, s_i)$ for every
+        phoneme, where $s_i \in [0,1]$ is the alignment confidence.
+\end{enumerate}
+
+Three pairs out of ten thousand failed at this stage, all with the same
+underlying cause: the target sequence was longer than the number of emission
+frames, which makes the constrained path set $\mathcal{B}^{-1}(\mathbf{y})$
+empty. Such pairs were discarded.
+
+\section{Feature Extraction}
+\label{sec:features}
+
+Each aligned phoneme is converted to a fixed-size log-mel patch.
+
+\textbf{Context padding.} The segment is widened by $20$\,ms on each side. Stop
+consonants in particular are only interpretable together with their closure and
+release, and the alignment boundary tends to fall inside the acoustic event
+rather than around it. The padded interval is clipped to the bounds of the
+waveform.
+
+\textbf{Log-mel spectrogram.} A mel spectrogram with $M = 64$ mel bands is
+computed over the cropped clip with the default \texttt{librosa} analysis
+parameters (2048-sample window, 512-sample hop) and converted to decibels
+according to Equation~\eqref{eq:logmel}.
+
+\textbf{Fixed width.} The classifier requires a constant input shape. Patches
+wider than $F = 32$ frames are truncated to the first 32; narrower patches are
+zero-padded on the right. Truncation is preferred to resampling because
+duration is itself disrupted in dysarthria
+(Section~\ref{sec:lit-dysarthria}) and rescaling the time axis would remove
+that information; the 32-frame window at the stated hop covers approximately
+$1.0$\,s of audio, which exceeds any plausible single-phoneme duration, so
+truncation is in practice rare.
+
+\textbf{Normalisation.} A single global $z$-score is applied across the entire
+feature tensor,
+\begin{equation}
+\tilde{X} = \frac{X - \mu}{\sigma + \epsilon},
+\qquad
+\mu = \operatorname{mean}(X),\quad \sigma = \operatorname{std}(X),
+\label{eq:zscore}
+\end{equation}
+with $\mu$ and $\sigma$ computed once over the training corpus and
+\emph{persisted}. The measured values were $\mu = -2.41$\,dB and
+$\sigma = 10.22$\,dB. Because the log-mel representation is in decibels and
+therefore level-dependent, these two scalars are as much a part of the trained
+model as the network weights; the deployed service reproduces them exactly
+(Section~\ref{sec:impl-normalisation}).
+
+The complete parameter set is given in Table~\ref{tab:feature-params}. Every one
+of these values is duplicated in the deployed service's configuration module and
+must not diverge.
+
+\begin{table}[H]
+\centering
+\caption[Audio and feature extraction parameters]{Audio and feature extraction
+parameters, shared by training and inference.}
+\label{tab:feature-params}
+\begin{tabular}{@{}llp{6.6cm}@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} & \textbf{Rationale} \\
+\midrule
+Sample rate            & 16\,000\,Hz & Native rate of the wav2vec2 aligner \\
+Channels               & mono        & Single articulatory source \\
+Silence trim threshold & 20\,dB      & Removes leading/trailing silence \\
+Mel bands $M$          & 64          & Frequency resolution vs.\ patch size \\
+Fixed frames $F$       & 32          & Constant classifier input width \\
+Context padding        & 0.02\,s     & Preserves closure/release of stops \\
+Patch shape            & $64\times32\times1$ & Single-channel image \\
+Global mel mean $\mu$  & $-2.41$\,dB & Persisted normalisation constant \\
+Global mel std $\sigma$& $10.22$\,dB & Persisted normalisation constant \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Label Derivation}
+\label{sec:labelling}
+
+No clinician-annotated per-phoneme labels exist for this corpus
+(Section~\ref{sec:lit-corpora}), so labels must be derived from the paired
+structure of the data. Two strategies were implemented. The first was adopted
+initially and abandoned; the second is the method of this dissertation.
+
+\subsection{Phoneme deviation measure}
+
+Both strategies rest on the same underlying quantity. For the $i$-th phoneme of
+a pair, let $\mathbf{d}_i$ and $\mathbf{c}_i$ be the log-mel patches of the
+dysarthric and matched control segments. The deviation is the mean absolute
+difference in decibels over the overlapping region,
+\begin{equation}
+D_i = \frac{1}{M \cdot F'} \sum_{m=1}^{M} \sum_{t=1}^{F'}
+      \bigl| \mathbf{d}_i(m,t) - \mathbf{c}_i(m,t) \bigr|,
+\qquad F' = \min\bigl(F_{d_i}, F_{c_i}\bigr).
+\label{eq:distance}
+\end{equation}
+The $L_1$ norm is used rather than the $L_2$ norm because it is less dominated
+by isolated large-magnitude bins, which in log-mel space are frequently caused
+by low-energy frames rather than by articulatory difference. The measure is
+computed on the \emph{unnormalised} decibel patches so that it carries a
+physical interpretation: $D_i$ is an average difference in decibels.
+
+Over the corpus, $D$ ranged from $0.13$\,dB to $6.83$\,dB with a median of
+$0.76$\,dB.
+
+\subsection{Method 1: global percentile labelling}
+\label{sec:method1}
+
+The first strategy pooled every phoneme instance --- dysarthric and control
+alike --- into a single distribution of $D$, and declared the top
+$\rho = 30\%$ of that pooled distribution to be errors:
+\begin{equation}
+y_i^{(1)} = \mathbb{1}\bigl[\,D_i \geq \operatorname{Perc}_{100-\rho}\bigl(\{D_j\}_{j \in \text{all}}\bigr)\,\bigr].
+\label{eq:method1}
+\end{equation}
+
+The appeal of Equation~\eqref{eq:method1} is that it requires no assumption
+about which speakers are impaired, and it produces a class balance of exactly
+$\rho$ by construction, which is convenient for training.
+
+That convenience is the defect. Because the percentile is computed over the
+pooled distribution, the criterion is not ``deviates from healthy speech'' but
+``is among the most deviant $30\%$ of everything''. Healthy control phonemes
+occupy the lower part of the distribution but not exclusively so, and a
+non-trivial share of them therefore exceeds the pooled cutoff and is labelled
+erroneous \emph{even though it was produced by a healthy speaker with no
+articulation impairment}. The label noise this introduces is systematic and is
+concentrated precisely on the examples that ought to define the correct class.
+
+The consequence was observed directly at inference time. A model trained under
+Equation~\eqref{eq:method1} learned the base rate implied by the labelling
+scheme and flagged roughly that proportion of phonemes in \emph{any} recording.
+Presented with a clear control recording, it reported errors throughout. The
+model was therefore unable to perform the one discrimination the system exists
+to perform --- separating clear from impaired speech --- and the strategy was
+abandoned.
+
+\subsection{Method 2: control-baseline labelling}
+\label{sec:method2}
+
+Method~2 changes the definition of correctness from a statistical one to a
+referential one: \emph{correct} means \emph{like a healthy speaker producing
+this sound}.
+
+Let $\mathcal{C}$ denote the set of control phoneme instances and $\mathcal{D}$
+the set of dysarthric phoneme instances. The labelling rule is
+\begin{equation}
+y_i^{(2)} =
+\begin{cases}
+0, & i \in \mathcal{C},\\[4pt]
+\mathbb{1}\bigl[\,D_i \geq \tau\,\bigr], & i \in \mathcal{D},
+\end{cases}
+\qquad
+\tau = \operatorname{Perc}_{100-\rho}\bigl(\{D_j\}_{j \in \mathcal{D}}\bigr).
+\label{eq:method2}
+\end{equation}
+
+The first branch is unconditional: a control instance is correct by definition.
+
+Three properties follow directly from Equation~\eqref{eq:method2} and together
+constitute the contribution.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Control phonemes cannot be labelled as errors.} The first branch
+        is unconditional. There is no value of $D$, no percentile and no
+        threshold that can move a control instance into the error class. The
+        systematic mislabelling of Method~1 is eliminated by construction rather
+        than mitigated by tuning.
+  \item \textbf{The threshold is estimated only over impaired data.} $\tau$ is
+        the $(100-\rho)$-th percentile of $\{D_j\}_{j \in \mathcal{D}}$, not of
+        the pooled set. The cutoff therefore answers the question ``which
+        dysarthric productions deviate most from their own healthy
+        counterparts'', which is the clinically meaningful question.
+  \item \textbf{Well-produced dysarthric phonemes are retained as correct.} The
+        second branch is a comparison, not a quota over the whole corpus. A
+        dysarthric speaker who produces a sound cleanly yields $D_i < \tau$ and
+        that instance enters training as a positive example of correctness.
+        This matters both for fairness --- the model does not learn ``impaired
+        speaker $\Rightarrow$ error'' --- and for clinical utility, since
+        recognising a successful production is what makes progress visible.
+\end{enumerate}
+
+Additionally, every control instance is \emph{retained in the training set} as
+an explicit correct example rather than discarded. The control instances are
+the anchors that define the correct class; removing them would leave the model
+with only the low-deviation dysarthric instances as its notion of correctness,
+which is a weaker and noisier definition.
+
+The value $\rho = 30\%$ was chosen as a compromise: a smaller $\rho$ yields
+cleaner error labels but too few positive examples of the minority class, while
+a larger $\rho$ dilutes the error class with mildly deviant productions. With
+$\rho = 30\%$ the resulting cutoff was $\tau = 1.20$\,dB.
+
+Figure~\ref{fig:labelling-comparison} contrasts the two schemes, and
+Table~\ref{tab:labelling-comparison} summarises the differences.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{groupplot}[
+  group style={group size=2 by 1, horizontal sep=16mm},
+  width=0.48\textwidth, height=5.2cm,
+  xlabel={Deviation $D$ (dB)},
+  xmin=0, xmax=4, ymin=0, ymax=1.25,
+  ytick=\empty, xtick={0,1,2,3,4},
+  tick label style={font=\scriptsize}, label style={font=\scriptsize},
+  title style={font=\scriptsize},
+  legend style={font=\tiny, at={(0.97,0.97)}, anchor=north east, draw=none,
+                fill=none},
+]
+
+\nextgroupplot[ylabel={density}, title={Method 1: pooled percentile}]
+\addplot[smooth, thick, draw=green!55!black, fill=green!25, fill opacity=0.45,
+         domain=0:4, samples=120]
+  {exp(-((x-0.55)^2)/(2*0.30^2))};
+\addlegendentry{control}
+\addplot[smooth, thick, draw=red!65!black, fill=red!22, fill opacity=0.45,
+         domain=0:4, samples=120]
+  {0.85*exp(-((x-1.30)^2)/(2*0.70^2))};
+\addlegendentry{dysarthric}
+\draw[very thick, black, dashed] (axis cs:1.05,0) -- (axis cs:1.05,1.15);
+\node[font=\tiny, anchor=south] at (axis cs:1.05,1.16) {pooled cutoff};
+\node[font=\tiny, anchor=west, text=red!60!black, align=center]
+     at (axis cs:1.15,0.55) {control tail\\mislabelled};
+
+\nextgroupplot[ylabel={}, title={Method 2: control-baseline}]
+\addplot[smooth, thick, draw=green!55!black, fill=green!25, fill opacity=0.45,
+         domain=0:4, samples=120]
+  {exp(-((x-0.55)^2)/(2*0.30^2))};
+\addlegendentry{control (exempt)}
+\addplot[smooth, thick, draw=red!65!black, fill=red!22, fill opacity=0.45,
+         domain=0:4, samples=120]
+  {0.85*exp(-((x-1.30)^2)/(2*0.70^2))};
+\addlegendentry{dysarthric}
+\draw[very thick, black, dashed] (axis cs:1.20,0) -- (axis cs:1.20,1.15);
+\node[font=\tiny, anchor=south, align=center] at (axis cs:1.20,1.16)
+     {$\tau$ from dysarthric only};
+\end{groupplot}
+\end{tikzpicture}
+\caption[Method 1 versus Method 2 labelling]{Schematic comparison of the two
+labelling strategies. Under Method~1 the cutoff is estimated over the pooled
+distribution, so the upper tail of the control distribution is forced into the
+error class. Under Method~2 the cutoff $\tau$ is estimated over the dysarthric
+distribution alone and control instances are exempt from thresholding
+altogether.}
+\label{fig:labelling-comparison}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption[Comparison of labelling strategies]{Comparison of the two labelling
+strategies.}
+\label{tab:labelling-comparison}
+\small
+\begin{tabularx}{\textwidth}{@{}p{4.1cm}XX@{}}
+\toprule
+\textbf{Aspect} & \textbf{Method 1 (global percentile)} & \textbf{Method 2 (control baseline)} \\
+\midrule
+Definition of ``correct'' & Below a pooled statistical cutoff & Produced by a healthy control speaker \\
+Threshold estimated over  & All phonemes (control + dysarthric) & Dysarthric phonemes only \\
+Control instances         & Thresholded like any other; upper tail becomes ``error'' & Labelled correct unconditionally; retained as anchors \\
+Well-produced dysarthric  & May be forced into the error class to satisfy the quota & Correctly labelled as correct \\
+Class balance             & Exactly $\rho$ by construction & Emergent (15.0\% error observed) \\
+Failure mode              & Flags errors in clear speech at inference & --- \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Resulting dataset composition}
+
+Applying Equation~\eqref{eq:method2} to the aligned corpus yielded
+$49{,}153$ control instances and $49{,}153$ dysarthric instances, a total of
+$98{,}306$ labelled phoneme patches. Of the dysarthric instances, $14{,}746$
+exceeded $\tau$ and were labelled as errors and $34{,}407$ were labelled
+correct. Combined with the control instances, the corpus contains $14{,}746$
+error and $83{,}560$ correct instances --- a 15.0\%/85.0\% split. This imbalance
+is an honest reflection of the phenomenon (most attempted phonemes, even by
+impaired speakers, are not gross errors) and is handled at the training stage
+rather than by distorting the labels.
+
+\section{Data Splitting}
+\label{sec:split}
+
+The corpus was split 80\%/20\% into training and held-out sets with
+stratification on the label, under a fixed random seed of 42.
+
+\textbf{The split precedes class balancing.} An earlier iteration of the
+pipeline balanced the classes by upsampling and \emph{then} split, with the
+result that duplicated copies of the same minority instance appeared on both
+sides of the split. The held-out metrics obtained under that ordering were
+inflated and meaningless. In the final pipeline, the split is performed first
+and balancing is applied to the training partition only; the held-out partition
+retains the natural 15\%/85\% distribution.
+
+\textbf{Balancing.} Within the training partition the minority class is
+upsampled with replacement to the size of the majority class, and the result is
+shuffled. This yields a training set of $133{,}694$ instances at exactly 50/50
+balance, and a held-out set of $19{,}662$ instances at the natural distribution.
+
+\textbf{A stated limitation.} The held-out partition was also supplied to Keras
+as the validation set for early stopping, so the reported held-out metrics are
+obtained on data that participated in the stopping decision. This is a genuine
+methodological weakness; it is quantified and discussed in
+Section~\ref{sec:limitations} rather than concealed. A three-way split with a
+separate validation partition is the correct design and is recommended as
+future work.
+
+\section{Model Training Protocol}
+\label{sec:training-protocol}
+
+All candidate architectures were trained under the identical protocol given in
+Table~\ref{tab:hyperparams}, so that the architecture comparison of
+Section~\ref{sec:arch-design} is controlled.
+
+\begin{table}[H]
+\centering
+\caption[Training hyperparameters]{Training hyperparameters, held constant
+across all candidate architectures.}
+\label{tab:hyperparams}
+\small
+\begin{tabular}{@{}llp{5.2cm}@{}}
+\toprule
+\textbf{Hyperparameter} & \textbf{Value} & \textbf{Note} \\
+\midrule
+Loss                 & Categorical cross-entropy & Two-unit softmax output \\
+Optimiser            & Adam                      & $\eta = 10^{-3}$, $\beta_1 = 0.9$, $\beta_2 = 0.999$ \\
+Batch size           & 32                        & \\
+Maximum epochs       & 30                        & \\
+Early stopping       & patience 5                & On \texttt{val\_loss}; best weights restored \\
+Dropout              & 0.3                       & After each block and the dense layer \\
+Random seed          & 42                        & Split, upsampling and shuffle \\
+Class balancing      & Upsampling                & Training partition only \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Dropout is applied at a relatively high rate of $0.3$ throughout because the
+labels are proxy labels derived from an acoustic distance measure and therefore
+carry appreciable noise; the regularisation is intended to discourage the
+network from fitting that noise. Recurrent dropout is deliberately \emph{not}
+used, because enabling it disqualifies the layer from the fused cuDNN kernel and
+increases training time by roughly an order of magnitude for no measured
+benefit.
+
+\section{Architecture Comparison Design}
+\label{sec:arch-design}
+
+Five architectures were compared, all sharing the same convolutional front end
+and differing only in the temporal-modelling stage:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{CNN} --- convolutional blocks followed directly by the dense
+        classifier (no recurrent stage). This is the ablation that quantifies
+        the contribution of temporal modelling.
+  \item \textbf{CNN--LSTM} --- unidirectional LSTM.
+  \item \textbf{CNN--GRU} --- unidirectional GRU.
+  \item \textbf{CNN--BiLSTM} --- bidirectional LSTM.
+  \item \textbf{CNN--BiGRU} --- bidirectional GRU.
+\end{enumerate}
+
+\textbf{Selection criterion.} Accuracy is an inadequate criterion for this
+task. Under the natural class distribution a model that predicts ``correct''
+unconditionally achieves 85\% accuracy while detecting nothing. The criterion
+adopted is \textbf{recall on the error class}, with error-class $F_1$ as the
+tie-breaker, on the grounds that the two error types carry asymmetric costs in
+a screening application. A false negative --- a genuinely unclear sound reported
+as fine --- silently withholds the feedback the tool exists to provide. A false
+positive --- a correct sound flagged for attention --- costs the user an
+unnecessary repetition, which is the ordinary business of therapy practice. The
+system is explicitly positioned as a screening instrument, and screening
+instruments are tuned for sensitivity. The user-adjustable threshold described
+in Section~\ref{sec:design-threshold} allows this operating point to be moved
+by the user if a more conservative behaviour is preferred.
+
+\section{Evaluation Metrics}
+\label{sec:metrics}
+
+With the error class as the positive class, the standard quantities are used:
+\begin{align}
+\text{Accuracy}  &= \frac{TP + TN}{TP + TN + FP + FN}, &
+\text{Precision} &= \frac{TP}{TP + FP}, \label{eq:acc-prec}\\[4pt]
+\text{Recall}    &= \frac{TP}{TP + FN}, &
+F_1              &= \frac{2 \cdot \text{Precision} \cdot \text{Recall}}
+                          {\text{Precision} + \text{Recall}}. \label{eq:rec-f1}
+\end{align}
+
+In addition to these, two task-specific evaluations are reported.
+
+\textbf{Control-versus-dysarthric separation.} The mean fraction of phonemes
+flagged per recording is computed separately over control recordings and over
+dysarthric recordings, and the gap between them is reported. This measures
+directly the property that Method~1 failed to deliver, and it is the evaluation
+that the labelling redesign was aimed at.
+
+\textbf{Per-phoneme error profile.} The predicted error rate is computed for
+each IPA symbol, restricted to symbols occurring at least 100 times so that the
+estimate is not dominated by sampling noise. The resulting ranking is compared
+against articulatory patterns reported in the clinical literature, as an
+external plausibility check on what the model has learned.
+
+\section{Tools and Experimental Environment}
+\label{sec:tools}
+
+Training was performed in a Kaggle notebook on an NVIDIA Tesla T4 GPU with
+CUDA-accelerated TensorFlow. The deployed inference service targets CPU-only
+commodity hardware. The principal software components are listed in
+Table~\ref{tab:tools}.
+
+\begin{table}[H]
+\centering
+\caption[Tools and libraries]{Principal tools and libraries.}
+\label{tab:tools}
+\begin{tabular}{@{}llp{6.0cm}@{}}
+\toprule
+\textbf{Component} & \textbf{Version} & \textbf{Role} \\
+\midrule
+Python              & 3.11            & Implementation language \\
+TensorFlow / Keras  & 2.16 / 3        & Classifier training and inference \\
+PyTorch             & 2.2.2           & Backend for the aligner \\
+torchaudio          & 2.2.2           & CTC forced alignment \\
+transformers        & 4.44.2          & wav2vec2 and Whisper model loading \\
+librosa             & 0.10.2          & Audio I/O, trimming, mel spectrograms \\
+NumPy / SciPy       & 1.26 / 1.13     & Numerical computation \\
+scikit-learn        & ---             & Splitting, resampling, metrics \\
+espeak-ng           & 1.50            & Grapheme-to-phoneme conversion \\
+FastAPI / Uvicorn   & 0.115 / 0.34    & Inference service \\
+React / Vite        & 18.3 / 6.0      & Web client \\
+Docker              & ---             & Packaging and deployment \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Ethical Considerations}
+\label{sec:ethics}
+
+\textbf{Data.} All model development used the publicly released UASpeech
+corpus, whose contributors gave informed consent under the original collection
+protocol and whose recordings are distributed in de-identified form. No new
+recordings of human participants were collected for this dissertation, and no
+clinical trial was conducted.
+
+\textbf{Privacy in deployment.} The deployed service processes uploaded audio in
+memory and does not persist it. There are no user accounts, no session history
+and no analytics on recorded content. This is a deliberate design choice for a
+system whose input is a biometric signal from a potentially vulnerable
+population.
+
+\textbf{Framing of the output.} The system's output could be misread as a
+clinical assessment. Three mitigations are applied. The interface presents a
+clarity score and highlights sounds for practice, and never presents a
+diagnosis or a severity label. The documentation states plainly that the system
+is a screening signal and not a clinical instrument. And the sensitivity
+threshold is exposed to the user, which makes visible the fact that the verdict
+is a tunable decision rather than an objective fact about the speech.
+
+\textbf{Bias.} The model was trained on the speakers present in UASpeech, whose
+dysarthria arises predominantly from cerebral palsy, and on American English.
+Performance on other aetiologies, other accents, other age groups and other
+languages is unmeasured and should not be assumed. This is stated as a
+limitation in Section~\ref{sec:limitations} and as a priority for future work.

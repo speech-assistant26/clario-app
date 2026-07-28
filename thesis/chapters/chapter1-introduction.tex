@@ -1,0 +1,300 @@
+% ============================================================
+% CHAPTER 1 - INTRODUCTION
+% ============================================================
+\chapter{Introduction}
+\label{ch:introduction}
+
+\section{Background}
+\label{sec:background}
+
+Speech is the primary channel through which most people participate in social,
+educational and economic life. When the motor system that controls speech is
+damaged, that channel narrows. \emph{Dysarthria} is a collective term for a
+group of motor speech disorders that arise from neurological injury to the
+motor--speech subsystems: respiration, phonation, resonance, articulation and
+prosody \cite{duffy2019motor}. It is a symptom rather than a disease, and it is
+associated with cerebral palsy, stroke, traumatic brain injury, Parkinson's
+disease, amyotrophic lateral sclerosis and multiple sclerosis, among other
+conditions. Estimates place the prevalence of dysarthria at roughly a third of
+stroke survivors and the large majority of people with advanced Parkinson's
+disease \cite{enderby2013disorders}.
+
+The perceptual consequence of dysarthria is reduced \emph{intelligibility}. A
+listener hears speech that is slurred, imprecisely articulated, hypernasal, or
+irregular in rate and loudness, and consequently has to work harder --- and
+often fails --- to recover the intended message. Crucially, the loss of
+intelligibility is not uniform across the utterance. It is concentrated at the
+level of individual speech sounds, or \emph{phonemes}: consonant clusters
+collapse, fricatives lose their high-frequency energy, stops are released
+weakly or not at all, and vowel space is centralised so that distinct vowels
+converge on a schwa-like target \cite{kim2011vowel}. The clinical picture is a
+phoneme-level phenomenon, and effective therapy is therefore organised around
+phoneme-level targets.
+
+Speech-and-language therapy for dysarthria is predominantly behavioural. A
+speech-language pathologist (SLP) identifies which articulatory targets a
+client is failing to reach, prescribes drills for those targets, and provides
+corrective feedback during practice. The evidence base is consistent on one
+point: outcomes depend on the \emph{volume} of practice with accurate feedback
+\cite{mauszycki2014treatment}. This is precisely where the model of care
+breaks down. Clinical contact time is scarce and expensive; in many health
+systems a client sees an SLP for perhaps one hour a week, and in low-resource
+settings far less. The remaining practice happens at home, unsupervised, where
+the person practising has no reliable way to know whether a repetition was
+better or worse than the last one. Self-monitoring is itself impaired in many
+dysarthric speakers, so the feedback loop that the therapy depends on is
+effectively open.
+
+Automating that feedback loop is an obvious target for speech technology, and
+the surrounding technology has advanced dramatically. Self-supervised acoustic
+models such as \texttt{wav2vec\,2.0} \cite{baevski2020wav2vec} learn
+representations from raw audio that transfer to phone recognition with very
+little labelled data; large multilingual recognisers such as Whisper
+\cite{radford2023robust} transcribe unconstrained speech at near-human word
+accuracy; and forced-alignment algorithms can place phoneme boundaries in an
+utterance to within a few tens of milliseconds. What has \emph{not} followed is
+a tool that converts this capability into the specific artefact a person
+practising at home needs: a per-sound verdict on the word they just said.
+
+\section{Motivation}
+\label{sec:motivation}
+
+Three observations motivated this project.
+
+\textbf{First, word-level feedback is the wrong granularity.} A conventional
+recogniser presented with a dysarthric production of the word ``water'' either
+recognises it or it does not. If it does not, the learner is told that the word
+was wrong. That verdict carries almost no instructional content: it does not
+say whether the initial \ph{w} was weak, whether the medial flap \ph{ɾ} was
+omitted, or whether the final rhotic \ph{ɚ} was centralised. A therapist would
+name the failing sound and prescribe a drill for it. A screening tool that
+cannot do the same is of limited value in practice.
+
+\textbf{Second, existing pronunciation-assessment research targets a different
+population.} The mature body of work on mispronunciation detection and
+diagnosis (MDD) is built around computer-aided pronunciation training for
+second-language learners \cite{witt2000phone,li2016mispronunciation}. Non-native
+errors are largely \emph{categorical substitutions}: a learner whose first
+language lacks \ph{θ} substitutes \ph{s} or \ph{t}, producing a well-formed but
+incorrect phoneme. Dysarthric errors are largely \emph{gradient distortions}:
+the target phoneme is attempted, but the articulatory gesture is incomplete,
+mistimed or imprecise, producing a token that is neither the target nor any
+other clean phoneme \cite{kim2011vowel}. A classifier trained to decide ``which
+phoneme was actually produced'' is answering the wrong question for this
+population; the right question is ``how far did this production deviate from a
+clear realisation of the intended sound''.
+
+\textbf{Third, and most consequentially for this work, defining the ground
+truth is harder than training the model.} Supervised phoneme-level error
+detection requires a label for every phoneme instance, and no large corpus of
+clinician-annotated per-phoneme error labels for dysarthric speech is publicly
+available. Labels must therefore be \emph{derived}. The initial approach taken
+in this project derived them by computing an acoustic deviation for every
+phoneme and declaring a fixed top percentile of that distribution to be errors.
+This is superficially reasonable and turned out to be badly wrong: because the
+percentile was applied to the pooled distribution over both impaired and
+healthy speakers, a fixed fraction of healthy control phonemes was labelled as
+erroneous \emph{by construction}. The trained model duly learned that roughly
+that fraction of any recording should be flagged, and at inference time it
+reported errors throughout perfectly clear control recordings. The system was
+statistically well-behaved and clinically useless. Diagnosing that failure, and
+redesigning the labelling scheme around a healthy control baseline, became the
+methodological core of this dissertation.
+
+\section{Problem Statement}
+\label{sec:problem}
+
+People with dysarthria and other sources of unclear articulation lack an
+accessible, automatic means of obtaining \emph{phoneme-level} feedback on their
+speech during unsupervised practice. Contemporary automatic speech recognition
+provides only a word-level verdict; established mispronunciation-detection
+methods assume categorical substitution errors characteristic of second-language
+learners rather than the gradient distortions characteristic of motor speech
+disorders; and supervised approaches are blocked by the absence of
+clinician-annotated per-phoneme ground truth for this population. Furthermore,
+naive strategies for deriving that ground truth from acoustic deviation
+statistics --- specifically, global percentile thresholding --- systematically
+mislabel healthy speech as erroneous, producing models that cannot distinguish
+impaired from clear production.
+
+Formally, given a recording $x$ of a speaker attempting a known target word $w$,
+the problem is to produce a sequence of tuples
+$\langle p_i, t^{\text{start}}_i, t^{\text{end}}_i, \hat{y}_i \rangle$ where
+$p_i$ is the $i$-th phoneme of the canonical pronunciation of $w$,
+$[t^{\text{start}}_i, t^{\text{end}}_i]$ is its time span within $x$, and
+$\hat{y}_i \in \{\text{correct}, \text{error}\}$ is a verdict on whether that
+phoneme was produced clearly --- while ensuring that a clear production of $w$
+receives few or no error verdicts.
+
+\section{Research Questions}
+\label{sec:research-questions}
+
+This dissertation addresses the following questions.
+
+\begin{enumerate}[label=\textbf{RQ\arabic*.},leftmargin=1.6cm]
+  \item How can reliable phoneme-level error labels be derived for dysarthric
+        speech in the absence of clinician annotation, and why does global
+        percentile labelling fail?
+  \item Does anchoring the labelling scheme to a healthy control baseline
+        measurably improve the separation between clear and impaired speech at
+        inference time, relative to global percentile labelling?
+  \item Which neural architecture --- among CNN, CNN--LSTM, CNN--GRU,
+        CNN--BiLSTM and CNN--BiGRU --- best detects phoneme-level errors from
+        fixed-size log-mel patches, and by which criterion should the winner be
+        chosen for a screening application?
+  \item Which phonemes are most frequently flagged by the resulting model, and
+        is that distribution consistent with the articulatory profile of
+        dysarthria reported in the clinical literature?
+  \item Can the resulting model be deployed as a responsive, browser-based
+        application that runs on commodity CPU hardware and returns
+        per-phoneme feedback within an interaction-acceptable latency?
+\end{enumerate}
+
+\section{Aim and Objectives}
+\label{sec:aim-objectives}
+
+\subsection{Aim}
+
+To design, implement and evaluate a phoneme-level pronunciation error detection
+system for dysarthric and unclear speech, grounded in a control-baseline
+labelling strategy, and to deliver it as an accessible web application that
+gives a practising speaker per-sound feedback on a target word.
+
+\subsection{Objectives}
+
+\begin{enumerate}[label=\textbf{O\arabic*.},leftmargin=1.4cm]
+  \item To review the literature on dysarthric speech characteristics,
+        mispronunciation detection and diagnosis, forced alignment and
+        deep-learning architectures for speech classification, and to identify
+        the gap this work addresses.
+  \item To construct a phoneme-aligned dataset from paired dysarthric and
+        control recordings of the same target words, using
+        grapheme-to-phoneme conversion and CTC forced alignment.
+  \item To design and justify a labelling strategy that treats healthy control
+        productions as the definition of correctness, and to demonstrate why
+        the alternative global-percentile strategy fails.
+  \item To extract fixed-size log-mel representations of each aligned phoneme
+        and to train a set of candidate neural classifiers on them.
+  \item To evaluate the candidate architectures under a common protocol and to
+        select one according to a criterion appropriate to a screening tool.
+  \item To analyse model behaviour at the level of individual phonemes and to
+        compare that behaviour against known clinical patterns.
+  \item To implement a production inference service that reproduces the
+        training-time feature pipeline exactly and adds the input validation
+        that a deployed system requires.
+  \item To implement a responsive browser-based client that records audio,
+        submits it for analysis and visualises per-phoneme verdicts.
+  \item To evaluate the deployed system functionally and non-functionally, and
+        to state the limitations that bound its clinical interpretation.
+\end{enumerate}
+
+\section{Scope and Delimitations}
+\label{sec:scope}
+
+\subsection{In scope}
+
+\begin{itemize}[leftmargin=*]
+  \item Single-word and short-phrase analysis in \textbf{American English},
+        using the \texttt{en-us} voice of the \texttt{espeak-ng}
+        grapheme-to-phoneme engine.
+  \item \textbf{Known-target} assessment: the word the speaker intends to say
+        is supplied to the system in advance, as is standard in reading-based
+        therapy drills. The system does not have to guess the target.
+  \item \textbf{Binary} per-phoneme classification: each phoneme is judged
+        \emph{correct} or \emph{error}. The system reports a continuous error
+        probability alongside the binary verdict.
+  \item A deployable web application with recording, upload, waveform
+        visualisation, per-phoneme breakdown and an adjustable sensitivity
+        threshold.
+\end{itemize}
+
+\subsection{Out of scope}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Diagnosis.} The system produces a screening signal about
+        acoustic deviation. It does not diagnose dysarthria, does not classify
+        dysarthria subtype or severity, and is not a medical device.
+  \item \textbf{Error typology.} The system reports \emph{that} a phoneme
+        deviated, not \emph{how} --- it does not distinguish substitution from
+        distortion, omission or insertion.
+  \item \textbf{Prosody and fluency.} Rate, stress, intonation and voice
+        quality are not assessed, although they are clinically relevant.
+  \item \textbf{Multilingual support.} Only American English is supported.
+  \item \textbf{Longitudinal progress tracking.} Each analysis is independent;
+        no user accounts or session history are maintained.
+  \item \textbf{Clinical validation.} No trial with clinician-annotated ground
+        truth or with human participants was conducted; this is identified as
+        the principal item of future work.
+\end{itemize}
+
+\section{Contributions}
+\label{sec:contributions}
+
+The specific contributions of this dissertation are as follows.
+
+\begin{enumerate}[label=\textbf{C\arabic*.},leftmargin=1.4cm]
+  \item \textbf{A diagnosis of the global-percentile labelling failure.} The
+        dissertation documents, with reference to the concrete failure mode
+        observed, why applying a percentile cutoff to a pooled deviation
+        distribution guarantees that healthy speech is mislabelled, and why the
+        resulting model cannot separate clear from impaired production
+        (Section~\ref{sec:method1}).
+  \item \textbf{A control-baseline labelling strategy.} A labelling scheme in
+        which every control phoneme is a guaranteed-correct anchor retained in
+        training, and in which the error cutoff is estimated \emph{only} over
+        the dysarthric deviation distribution, so that control data is
+        structurally incapable of entering the error class
+        (Section~\ref{sec:method2}).
+  \item \textbf{A matched-pair alignment procedure.} Both recordings of a pair
+        are aligned to the \emph{same} canonical phoneme sequence derived from
+        the control transcript, so that phoneme $i$ of the impaired production
+        is guaranteed to correspond to phoneme $i$ of the control production,
+        which is what makes a per-phoneme distance meaningful
+        (Section~\ref{sec:alignment}).
+  \item \textbf{A comparative architecture study.} Five architectures evaluated
+        under a common protocol, with the selection criterion made explicit and
+        justified in terms of the asymmetric cost of errors in a screening
+        application (Section~\ref{sec:arch-comparison}).
+  \item \textbf{A per-phoneme error profile} of the trained model, compared
+        against articulatory patterns reported in the dysarthria literature
+        (Section~\ref{sec:per-phoneme}).
+  \item \textbf{A deployed reference implementation}, \systemName, comprising a
+        FastAPI inference service that reproduces the training feature pipeline
+        exactly, a quality gate and target-word verification layer that do not
+        exist in the research notebook, and a progressive web application
+        client (Chapters~\ref{ch:analysis-design} and~\ref{ch:implementation}).
+\end{enumerate}
+
+\section{Dissertation Structure}
+\label{sec:structure}
+
+\textbf{Chapter~\ref{ch:introduction}} has introduced the clinical background,
+the motivation, the problem statement, the research questions and the scope of
+the work.
+
+\textbf{Chapter~\ref{ch:literature}} reviews the acoustic characteristics of
+dysarthric speech, the mispronunciation-detection literature, forced-alignment
+techniques, self-supervised speech representations and the deep architectures
+relevant to phoneme classification, and closes by identifying the research gap.
+
+\textbf{Chapter~\ref{ch:methodology}} presents the research methodology: the
+dataset, the alignment and feature-extraction procedure, and --- centrally ---
+the comparison between the Method~1 global-percentile labelling strategy and
+the Method~2 control-baseline strategy adopted here.
+
+\textbf{Chapter~\ref{ch:analysis-design}} presents the requirements analysis and
+the system design: architecture, component decomposition, the neural network
+design, the API contract and the user-interface design.
+
+\textbf{Chapter~\ref{ch:implementation}} describes the implementation of the
+training pipeline, the inference service and the web client, together with the
+testing strategy applied to each.
+
+\textbf{Chapter~\ref{ch:results}} reports and analyses the results: dataset
+statistics, training behaviour, the architecture comparison, the confusion
+analysis, the per-phoneme error profile and the system-level evaluation, and
+states the limitations of the study.
+
+\textbf{Chapter~\ref{ch:conclusion}} concludes by answering each research
+question, restating the contributions, discussing implications and setting out
+future work.

@@ -1,0 +1,74 @@
+\documentclass[12pt,a4paper,oneside]{report}
+
+\input{settings/preamble}
+\input{settings/thesis-info}
+
+\begin{document}
+
+% ============================================================
+% COVER AND TITLE PAGES - NO PAGE NUMBERS
+% ============================================================
+
+\input{frontmatter/cover-page}
+\input{frontmatter/title-page}
+
+% ============================================================
+% PREFATORY PAGES - ROMAN PAGE NUMBERS
+% ============================================================
+
+\pagenumbering{roman}
+\setcounter{page}{1}
+
+\input{frontmatter/declaration}
+\input{frontmatter/abstract}
+\input{frontmatter/dedication}
+\input{frontmatter/acknowledgement}
+
+\tableofcontents
+\clearpage
+
+\listoffigures
+\clearpage
+
+\listoftables
+\clearpage
+
+\input{frontmatter/abbreviations}
+
+% ============================================================
+% MAIN THESIS BODY - ARABIC PAGE NUMBERS
+% ============================================================
+
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+\input{chapters/chapter1-introduction}
+\input{chapters/chapter2-literature-review}
+\input{chapters/chapter3-methodology}
+\input{chapters/chapter4-analysis-design}
+\input{chapters/chapter5-implementation-testing}
+\input{chapters/chapter6-results-evaluation}
+\input{chapters/chapter7-conclusion}
+
+% ============================================================
+% REFERENCES
+% ============================================================
+
+\clearpage
+\phantomsection                       % anchor the TOC link to this page
+\addcontentsline{toc}{chapter}{REFERENCES}
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+% ============================================================
+% APPENDICES
+% ============================================================
+
+\clearpage
+\appendix
+\phantomsection                       % anchor the TOC link to this page
+\addcontentsline{toc}{chapter}{APPENDICES}
+
+\input{appendices/appendix-a}
+
+\end{document}

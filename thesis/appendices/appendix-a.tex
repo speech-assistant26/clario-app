@@ -1,0 +1,304 @@
+% ============================================================
+% APPENDIX A - SUPPORTING MATERIAL
+% ============================================================
+\chapter{Supporting Material}
+\label{app:a}
+
+\section{Configuration Reference}
+\label{app:config}
+
+Every parameter that affects the model's output is centralised in the service's
+settings module and is overridable by environment variable.
+Table~\ref{tab:app-config} lists them; \textbf{every name in the table carries
+the prefix \pth{CLARIO_}}, which is omitted from the rows for legibility (so
+\pth{SAMPLE_RATE} is set as \pth{CLARIO_SAMPLE_RATE}). The values in the first
+block must match the training pipeline exactly; changing any of them without
+retraining silently degrades accuracy.
+
+\begin{table}[H]
+\centering
+\caption[Configuration reference]{Configuration parameters of the inference
+service. All names take the \texttt{CLARIO\_} prefix.}
+\label{tab:app-config}
+\small
+\begin{tabularx}{\textwidth}{@{}p{5.0cm}p{2.6cm}X@{}}
+\toprule
+\textbf{Variable} & \textbf{Default} & \textbf{Effect} \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Must match training}} \\
+\pth{SAMPLE_RATE}        & 16000     & Audio sample rate (Hz) \\
+\pth{N_MELS}             & 64        & Mel filterbank size \\
+\pth{FIXED_FRAMES}       & 32        & Classifier input width \\
+\pth{CONTEXT_PAD_SEC}    & 0.02      & Padding around each phoneme span \\
+\pth{TRIM_TOP_DB}        & 20.0      & Silence-trim threshold \\
+\pth{MEL_MEAN}           & $-2.4128$ & Global normalisation mean \\
+\pth{MEL_STD}            & $10.2228$ & Global normalisation std \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Decision}} \\
+\pth{ERROR_THRESHOLD}     & 0.50 & Default $P(\text{error})$ cutoff \\
+\pth{MIN_ERROR_THRESHOLD} & 0.30 & Lower bound for client override \\
+\pth{MAX_ERROR_THRESHOLD} & 0.70 & Upper bound for client override \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Quality gate}} \\
+\pth{ENABLE_QUALITY_GATE} & true    & Enable pre-inference rejection \\
+\pth{MIN_RMS_DBFS}        & $-40.0$ & Reject below this RMS level \\
+\pth{MAX_NOISE_FLATNESS}  & 0.6     & Reject above this spectral flatness \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Target-word verification}} \\
+\pth{ENABLE_WORD_VERIFICATION} & true & Enable the Whisper check \\
+\pth{WHISPER_MODEL_NAME}  & \pth{openai/whisper-tiny.en} & ASR model \\
+\pth{WORD_MATCH_THRESHOLD} & 0.45 & Similarity below which the word differs \\
+\midrule
+\multicolumn{3}{@{}l}{\textit{Service}} \\
+\pth{DEVICE}           & auto & \pth{cpu}, \pth{cuda} or \pth{auto} \\
+\pth{ALIGN_MODEL_NAME} & \pth{facebook/wav2vec2-lv-60-espeak-cv-ft} & Forced-alignment model \\
+\pth{MODEL_PATH}       & \pth{models/phoneme_error_model.keras} & Classifier artefact \\
+\pth{CORS_ORIGINS}     & \pth{*} & Allowed origins \\
+\pth{MAX_UPLOAD_MB}    & 25   & Upload size limit \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Model Training Code}
+\label{app:training-code}
+
+Listing~\ref{lst:app-train} gives the construction and training of the selected
+CNN--BiLSTM classifier, including the split-before-balance ordering discussed in
+Section~\ref{sec:split}.
+
+\begin{lstlisting}[language=Python, caption={Split, class balancing and CNN--BiLSTM training.}, label={lst:app-train}]
+# ---- SPLIT FIRST, then balance ONLY the training set ------------------
+# Balancing before splitting leaks upsampled duplicates into the test set
+# and inflates every reported metric. Split first; the test partition
+# keeps the natural 15% / 85% distribution.
+y_cat_all = to_categorical(y, num_classes=2)
+X_train_raw, X_test, y_train_raw, y_test = train_test_split(
+    X, y_cat_all, test_size=0.2, random_state=RANDOM_STATE, stratify=y)
+
+# Upsample the minority class within the TRAINING partition only.
+y_train_lbl = np.argmax(y_train_raw, axis=1)
+X_tr_err = X_train_raw[y_train_lbl == 1]
+X_tr_ok  = X_train_raw[y_train_lbl == 0]
+X_tr_err = resample(X_tr_err, replace=True, n_samples=len(X_tr_ok),
+                    random_state=RANDOM_STATE)
+
+X_train = np.concatenate([X_tr_err, X_tr_ok])
+y_train_bal = np.concatenate([np.ones(len(X_tr_err)), np.zeros(len(X_tr_ok))])
+perm = np.random.RandomState(RANDOM_STATE).permutation(len(X_train))
+X_train = X_train[perm]
+y_train = to_categorical(y_train_bal[perm], num_classes=2)
+
+# ---- CNN-BiLSTM -------------------------------------------------------
+inp = Input(shape=X_train.shape[1:])                 # (64, 32, 1)
+x = Conv2D(16, (3, 3), activation="relu", padding="same")(inp)
+x = BatchNormalization()(x); x = MaxPooling2D((2, 2))(x); x = Dropout(0.3)(x)
+x = Conv2D(32, (3, 3), activation="relu", padding="same")(x)
+x = BatchNormalization()(x); x = MaxPooling2D((2, 2))(x); x = Dropout(0.3)(x)
+x = TimeDistributed(Flatten())(x)                    # (16, 256)
+# No recurrent_dropout: it disqualifies the layer from the fused cuDNN
+# kernel and costs roughly an order of magnitude in epoch time.
+x = Bidirectional(LSTM(128, dropout=0.3))(x)
+x = Dense(64, activation="relu")(x); x = Dropout(0.3)(x)
+out = Dense(2, activation="softmax")(x)
+
+model = Model(inp, out)
+model.compile(loss="categorical_crossentropy", optimizer="adam",
+              metrics=["accuracy"])
+
+early_stop = tf.keras.callbacks.EarlyStopping(
+    monitor="val_loss", patience=5, restore_best_weights=True)
+history = model.fit(X_train, y_train, batch_size=BATCH_SIZE, epochs=EPOCHS,
+                    validation_data=(X_test, y_test), callbacks=[early_stop])
+\end{lstlisting}
+
+\section{Inference Pipeline Code}
+\label{app:inference-code}
+
+Listing~\ref{lst:app-infer} gives the top-level analysis method of the deployed
+service. It is a faithful port of the notebook inference cell, batched into a
+single framework call.
+
+\begin{lstlisting}[language=Python, caption={Top-level analysis method of the inference service.}, label={lst:app-infer}]
+def analyze(self, wave, target_word, error_threshold=None):
+    """Per-phoneme results for a pre-trimmed waveform + its target word."""
+    self.load()
+    segments = self.align(wave, target_word)
+    if not segments:
+        return []
+
+    threshold = (error_threshold if error_threshold is not None
+                 else self.s.error_threshold)
+
+    # One mel patch per phoneme, classified in a single batched predict.
+    mels = np.stack([self.crop_mel(wave, s, e) for _, s, e, _ in segments])
+    mels = mels[..., np.newaxis]            # (n_phon, n_mels, frames, 1)
+    mels = self._normalize(mels)            # training-exact global z-score
+    probs = self._clf.predict(mels, verbose=0)[:, 1]     # P(error)
+
+    results = []
+    for (phon, s, e, align_sc), p in zip(segments, probs):
+        p = float(p)
+        results.append({
+            "phoneme":     phon,
+            "start":       round(s, 4),
+            "end":         round(e, 4),
+            "verdict":     "ERROR" if p >= threshold else "ok",
+            "error_prob":  round(p, 4),
+            "align_score": round(align_sc, 4),
+        })
+    return results
+\end{lstlisting}
+
+\section{Sample API Response}
+\label{app:api-response}
+
+Listing~\ref{lst:app-json} shows a representative \texttt{/api/analyze} response,
+abbreviated in the waveform array.
+
+\begin{lstlisting}[caption={Representative API response (waveform truncated).}, label={lst:app-json}]
+{
+  "target_word": "shift",
+  "phonemes": [
+    {"phoneme": "S", "start": 0.04, "end": 0.06,
+     "verdict": "ok", "error_prob": 0.0412, "align_score": 0.9731},
+    {"phoneme": "I", "start": 0.12, "end": 0.14,
+     "verdict": "ok", "error_prob": 0.4998, "align_score": 0.8842},
+    {"phoneme": "f", "start": 0.26, "end": 0.28,
+     "verdict": "ok", "error_prob": 0.3107, "align_score": 0.9410},
+    {"phoneme": "t", "start": 0.36, "end": 0.38,
+     "verdict": "ok", "error_prob": 0.2985, "align_score": 0.9126}
+  ],
+  "n_errors": 0,
+  "n_phonemes": 4,
+  "accuracy": 1.0,
+  "duration_sec": 1.25,
+  "error_threshold": 0.5,
+  "waveform": [0.0012, -0.0031, 0.0104, "...", -0.0008],
+  "waveform_rate": 16000
+}
+\end{lstlisting}
+
+\noindent
+Note: the \texttt{phoneme} field carries the IPA symbol as a Unicode string. The
+listing above substitutes the corresponding ASCII transliterations
+(\texttt{S}~$\rightarrow$~\ph{ʃ}, \texttt{I}~$\rightarrow$~\ph{ɪ}) so that the
+code listing remains ASCII.
+
+\section{Full Per-Phoneme Error Rate Table}
+\label{app:per-phoneme-full}
+
+Table~\ref{tab:app-per-phoneme} repeats the per-phoneme results of
+Section~\ref{sec:per-phoneme} with the occurrence counts, ordered by predicted
+error rate. Symbols occurring fewer than 100 times in the corpus were excluded
+as statistically unreliable; three such symbols were removed.
+
+\begin{table}[H]
+\centering
+\caption[Per-phoneme error rates with counts]{Predicted error rate by phoneme,
+symbols with at least 100 occurrences.}
+\label{tab:app-per-phoneme}
+\begin{tabular}{@{}clrrr@{}}
+\toprule
+\textbf{Rank} & \textbf{IPA} & \textbf{Count} & \textbf{Error rate} & \textbf{Flagged (est.)} \\
+\midrule
+1  & \ph{ɾ} & 598     & 0.5084 & 304 \\
+2  & \ph{ɚ} & 2{,}062 & 0.4971 & 1{,}025 \\
+3  & \ph{ŋ} & 674     & 0.4644 & 313 \\
+4  & \ph{ə} & 3{,}594 & 0.4558 & 1{,}638 \\
+5  & \ph{ʊ} & 4{,}122 & 0.4430 & 1{,}826 \\
+6  & \ph{z} & 1{,}744 & 0.4409 & 769 \\
+7  & \ph{θ} & 706     & 0.4377 & 309 \\
+8  & \ph{v} & 1{,}270 & 0.4346 & 552 \\
+9  & \ph{t} & 5{,}286 & 0.4211 & 2{,}226 \\
+10 & \ph{l} & 4{,}562 & 0.4134 & 1{,}886 \\
+11 & \ph{n} & 4{,}802 & 0.4088 & 1{,}963 \\
+12 & \ph{ɪ} & 8{,}534 & 0.4005 & 3{,}418 \\
+13 & \ph{ʒ} & 1{,}124 & 0.3959 & 445 \\
+14 & \ph{ɹ} & 4{,}352 & 0.3911 & 1{,}702 \\
+15 & \ph{m} & 2{,}646 & 0.3828 & 1{,}013 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Deployment Reference}
+\label{app:deployment}
+
+\subsection{Local development}
+
+\begin{lstlisting}[caption={Running the full stack locally with Docker Compose.}, label={lst:app-compose}]
+# From the repository root. Builds the API and the nginx-served web app,
+# mounts the trained model read-only, and persists the aligner download
+# in a named volume so later starts are fast.
+docker compose up --build
+
+#   web app : http://localhost:3000
+#   API     : http://localhost:8010
+#   health  : curl http://localhost:8010/api/health
+\end{lstlisting}
+
+\subsection{Single-image production deployment}
+
+The production image builds the frontend with Node, installs the backend with
+CPU-only PyTorch wheels, optionally pre-fetches the aligner and Whisper models
+into an image layer, and serves both the API and the compiled static assets from
+one Uvicorn process on port 8000. Because the API and the UI share an origin, no
+CORS configuration is required, and the HTTPS origin satisfies the browser's
+secure-context requirement for microphone access.
+
+\subsection{Health endpoint}
+
+\begin{lstlisting}[caption={Health endpoint response for a fully ready service.}, label={lst:app-health}]
+{
+  "status": "ok",
+  "model_loaded": true,
+  "align_model_loaded": true,
+  "whisper_loaded": true,
+  "espeak_available": true,
+  "device": "cpu",
+  "normalization": "global-zscore"
+}
+\end{lstlisting}
+
+\noindent
+The \texttt{normalization} field is the field to check after any deployment: a
+value of \texttt{per-clip-zscore} indicates that neither the environment
+override, the dataset archive nor the baked-in constants were resolved, and that
+the service is running at reduced accuracy.
+
+\section{Phoneme Inventory}
+\label{app:phoneme-inventory}
+
+Table~\ref{tab:app-inventory} lists the IPA symbols referenced in this
+dissertation with their articulatory descriptions and an example word.
+
+\begin{table}[H]
+\centering
+\caption[IPA phoneme inventory]{IPA symbols referenced in this dissertation.}
+\label{tab:app-inventory}
+\small
+\begin{tabular}{@{}clll@{}}
+\toprule
+\textbf{IPA} & \textbf{Description} & \textbf{Class} & \textbf{Example} \\
+\midrule
+\ph{ɾ} & Alveolar flap                     & Consonant & \emph{water} \\
+\ph{ɚ} & R-coloured mid central vowel      & Vowel     & \emph{butter} \\
+\ph{ŋ} & Velar nasal                       & Consonant & \emph{sing} \\
+\ph{ə} & Mid central vowel (schwa)         & Vowel     & \emph{about} \\
+\ph{ʊ} & Near-close near-back rounded      & Vowel     & \emph{book} \\
+\ph{ɪ} & Near-close near-front unrounded   & Vowel     & \emph{shift} \\
+\ph{ɛ} & Open-mid front unrounded          & Vowel     & \emph{well} \\
+\ph{ʃ} & Voiceless postalveolar fricative  & Consonant & \emph{shift} \\
+\ph{ʒ} & Voiced postalveolar fricative     & Consonant & \emph{measure} \\
+\ph{θ} & Voiceless dental fricative        & Consonant & \emph{think} \\
+\ph{ɹ} & Alveolar approximant              & Consonant & \emph{red} \\
+\ph{z} & Voiced alveolar fricative         & Consonant & \emph{zoo} \\
+\ph{v} & Voiced labiodental fricative      & Consonant & \emph{van} \\
+\ph{t} & Voiceless alveolar stop           & Consonant & \emph{top} \\
+\ph{l} & Alveolar lateral approximant      & Consonant & \emph{look} \\
+\ph{n} & Alveolar nasal                    & Consonant & \emph{no} \\
+\ph{m} & Bilabial nasal                    & Consonant & \emph{man} \\
+\ph{w} & Labial-velar approximant          & Consonant & \emph{well} \\
+\ph{f} & Voiceless labiodental fricative   & Consonant & \emph{shift} \\
+\bottomrule
+\end{tabular}
+\end{table}

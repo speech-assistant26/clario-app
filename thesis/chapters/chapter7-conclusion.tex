@@ -1,0 +1,288 @@
+% ============================================================
+% CHAPTER 7 - CONCLUSION AND FUTURE WORK
+% ============================================================
+\chapter{Conclusion and Future Work}
+\label{ch:conclusion}
+
+\section{Introduction}
+
+This chapter concludes the dissertation. Section~\ref{sec:conc-summary}
+summarises the work; Section~\ref{sec:conc-rq} answers each research question
+against the evidence presented; Section~\ref{sec:conc-contributions} restates
+the contributions; Section~\ref{sec:conc-implications} discusses the
+implications; Section~\ref{sec:conc-reflection} reflects critically on the
+process; Section~\ref{sec:future} sets out future work; and
+Section~\ref{sec:conc-closing} closes.
+
+\section{Summary of the Work}
+\label{sec:conc-summary}
+
+This dissertation set out to give a person with dysarthric or otherwise unclear
+speech the kind of feedback a therapist gives: not ``that word was unclear'' but
+``that \emph{sound} was unclear''. The review in Chapter~\ref{ch:literature}
+established that the two mature technical traditions adjacent to this goal ---
+mispronunciation detection for second-language learners, and recognition and
+severity estimation for disordered speech --- each supply one half of what is
+required and neither supplies both, and that the binding constraint is the
+absence of clinician-annotated per-phoneme ground truth.
+
+Chapter~\ref{ch:methodology} addressed that constraint by deriving labels from
+the paired structure of the UASpeech corpus. Both recordings of a pair are
+force-aligned to the same canonical phoneme sequence obtained from the control
+transcript, so that phoneme $i$ of the impaired production and phoneme $i$ of
+the healthy production are two attempts at the same intended sound and their
+log-mel distance is meaningful. A first labelling strategy that thresholded the
+pooled deviation distribution at a fixed percentile was implemented, found to
+mislabel healthy speech by construction, and replaced by the control-baseline
+strategy in which control instances are correct by definition and the error
+cutoff is estimated over the dysarthric distribution alone.
+
+Chapters~\ref{ch:analysis-design} and \ref{ch:implementation} designed and built
+the system around the model: a CNN--BiLSTM classifier of 415{,}810 parameters, a
+FastAPI inference service that reproduces the training feature pipeline exactly
+and adds a quality gate and a target-word verifier, and a React progressive web
+application that records, submits and visualises.
+
+Chapter~\ref{ch:results} evaluated the result. Five architectures were compared;
+CNN--BiLSTM was selected on error-class recall and $F_1$; the selected model's
+behaviour was analysed in detail, including a frank account of its low precision
+under natural class imbalance; the per-phoneme error profile was shown to
+reproduce four independently documented clinical patterns; and the
+control-versus-dysarthric separation --- the property the labelling redesign was
+built to deliver --- was confirmed.
+
+\section{Answers to the Research Questions}
+\label{sec:conc-rq}
+
+\subsection*{RQ1 --- How can phoneme-level labels be derived without clinician
+annotation, and why does global percentile labelling fail?}
+
+Labels can be derived by \emph{reference comparison}: aligning a healthy and an
+impaired production of the same word to the same canonical phoneme sequence and
+measuring the per-phoneme log-mel deviation between corresponding segments
+(Equation~\eqref{eq:distance}). Global percentile labelling then fails for a
+structural reason. Applying a percentile cutoff to the pooled distribution makes
+the criterion ``is among the most deviant $\rho\%$ of everything'' rather than
+``deviates from healthy speech''. A fixed fraction of healthy control phonemes
+necessarily exceeds that cutoff and is labelled erroneous. The resulting label
+noise is not random but systematic, and it is concentrated precisely on the
+examples that ought to define the correct class, so the model learns the base
+rate rather than the phenomenon
+(Sections~\ref{sec:method1} and~\ref{sec:res-separation}).
+
+\subsection*{RQ2 --- Does control-baseline labelling improve separation between
+clear and impaired speech?}
+
+Yes, and the improvement is qualitative rather than incremental. Under Method~1
+healthy control recordings were returned with a large fraction of their phonemes
+flagged; under Method~2 they return few or none, while dysarthric recordings of
+the same words return substantially more
+(Sections~\ref{sec:res-separation} and~\ref{sec:qualitative}). The mechanism is
+explicit in Equation~\eqref{eq:method2}: all 49{,}153 control instances are
+labelled correct unconditionally and retained in training as anchors, and the
+cutoff is estimated over the dysarthric distribution alone, so no control
+instance can enter the error class by any route. Since the architecture,
+features and training protocol were essentially unchanged between the two
+methods, the change in behaviour is attributable to the labelling strategy
+alone.
+
+\subsection*{RQ3 --- Which architecture performs best, and by what criterion?}
+
+\textbf{CNN--BiLSTM}, selected on error-class recall (76.64\%) with error-class
+$F_1$ (74.04\%) as tie-breaker; both are the best values in the study
+(Table~\ref{tab:arch-comparison}). The criterion matters as much as the winner.
+Accuracy does not discriminate --- the top three models span 0.27 percentage
+points, which is inside run-to-run variation --- and accuracy is in any case
+misleading under 85\% class imbalance, where a constant predictor scores 85\%.
+Recall on the error class is the operationally correct criterion because the
+costs are asymmetric: a false negative silently withholds the feedback the
+system exists to provide, whereas a false positive costs one unnecessary
+repetition. The ablation is informative in its own right: removing the recurrent
+stage entirely costs 8.2 points of recall and 4.2 points of $F_1$, confirming
+that temporal modelling of the phoneme's trajectory contributes measurably.
+
+\subsection*{RQ4 --- Which phonemes are most frequently flagged, and is the
+distribution clinically plausible?}
+
+The highest predicted error rates fall on the alveolar flap \ph{ɾ} (50.84\%),
+the rhotic schwa \ph{ɚ} (49.71\%), the velar nasal \ph{ŋ} (46.44\%) and the
+reduced vowel \ph{ə} (45.58\%) (Table~\ref{tab:per-phoneme}). The distribution
+is clinically plausible on four independent counts: rapid ballistic gestures
+rank highest, rhotics and centralised vowels rank high (consistent with vowel
+space compression), fricatives are over-represented relative to their frequency
+(consistent with impaired airflow control), and nasals appear where
+velopharyngeal control is implicated. That an ordering derived from a purely
+data-driven acoustic distance measure reproduces these documented patterns is
+evidence that the model has learned articulatory difficulty rather than a
+dataset artefact (Section~\ref{sec:per-phoneme}).
+
+\subsection*{RQ5 --- Can it be deployed accessibly on commodity hardware?}
+
+Yes. The system runs as a single Docker image on a 2-vCPU CPU-only host with no
+GPU, serving both the API and the compiled web client from one origin. Cold
+start is 10--30\,s, paid once at process start and absorbed by the warm-up hook;
+warm single-word analysis completes in a few seconds, dominated by the wav2vec2
+alignment pass rather than by the classifier. The client is a progressive web
+application installable on a phone home screen
+(Sections~\ref{sec:impl-deploy} and~\ref{sec:res-system}).
+
+\section{Contributions Restated}
+\label{sec:conc-contributions}
+
+\begin{enumerate}[label=\textbf{C\arabic*.},leftmargin=1.4cm]
+  \item A documented diagnosis of the global-percentile labelling failure for
+        paired impaired/healthy speech corpora, with the mechanism made
+        explicit.
+  \item The control-baseline labelling strategy of
+        Equation~\eqref{eq:method2}, in which healthy productions are correct by
+        definition and retained as anchors, and the error cutoff is estimated
+        over the impaired sub-population only.
+  \item The matched-pair alignment procedure that aligns both recordings to the
+        same control-derived canonical sequence, which is what makes a
+        per-phoneme distance well defined.
+  \item A controlled five-architecture comparison with the selection criterion
+        stated in advance and justified by the asymmetric costs of a screening
+        application.
+  \item A per-phoneme error profile validated against four independently
+        documented clinical patterns.
+  \item \systemName: a deployed reference implementation including a
+        train--serve parity test, an audio quality gate and a target-word
+        verifier --- production concerns absent from the research pipeline.
+\end{enumerate}
+
+\section{Implications}
+\label{sec:conc-implications}
+
+\textbf{For research on weakly supervised speech assessment.} Where ground truth
+must be derived rather than annotated, the derivation deserves at least the
+scrutiny normally given to the model. This work found a 3.75-point accuracy
+spread across five architectures and a qualitative behavioural change from one
+labelling decision. Papers reporting derived labels should state the derivation
+rule explicitly and should test the resulting model on data that the rule
+implicitly defines as negative --- here, healthy speech --- because that is where
+a labelling pathology becomes visible.
+
+\textbf{For clinical practice.} The result is not a diagnostic instrument and
+must not be presented as one. What it plausibly supports is between-session
+practice: a client can obtain per-sound feedback during unsupervised repetition,
+and a clinician can review which sounds are consistently flagged. The interface
+decisions of Section~\ref{sec:ui-design} --- exposing the probability, exposing
+the threshold, never presenting a diagnosis --- are how that framing is enforced
+in the artefact rather than only in the documentation.
+
+\textbf{For accessible speech technology.} The system runs on free-tier CPU
+hardware in a browser. The engineering choices that made this possible --- a
+small classifier, client-side format conversion, CPU-only dependency wheels,
+baked-in normalisation constants --- are transferable to other assistive speech
+applications, where deployment cost is frequently the barrier between a
+research result and a usable tool.
+
+\section{Critical Reflection}
+\label{sec:conc-reflection}
+
+Three judgements would be made differently with hindsight.
+
+\textbf{The validation and test partitions should never have coincided}
+(limitation L2). Supplying the held-out partition to Keras as the validation set
+was expedient and is a genuine methodological defect; the reported 71.99\% is
+mildly optimistic as a result. A three-way split costs almost nothing and would
+have removed an avoidable caveat from every number in Chapter~\ref{ch:results}.
+
+\textbf{Each architecture should have been trained more than once.} With a
+single run per candidate and a 0.27-point accuracy spread across the top three,
+the comparison cannot support fine distinctions. The recall differences are
+large enough to be believable, but the study would be stronger with a mean and a
+standard deviation over several seeds.
+
+\textbf{A small clinician-annotated validation set would have been worth its
+cost.} Even one or two hundred phoneme instances judged by a speech-language
+pathologist would convert the central caveat of this work --- that all metrics
+measure agreement with a derived proxy --- from an unbounded limitation into a
+measured one. This is the highest-value item of future work per unit of effort.
+
+Against these, the decision to treat the labelling failure as the central
+research problem rather than as a bug to be patched was correct, and it is what
+gives the dissertation a result worth reporting.
+
+\section{Future Work}
+\label{sec:future}
+
+\subsection{Immediate}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Three-way split.} Separate validation and test partitions, and
+        re-report all metrics on genuinely held-out data (addresses L2).
+  \item \textbf{Repeated runs.} Train each architecture over several seeds and
+        report means and standard deviations (addresses L6).
+  \item \textbf{Threshold characterisation.} Compute the full precision--recall
+        and ROC curves over the threshold range and publish the operating
+        characteristic, so that the sensitivity slider is annotated with its
+        actual consequences rather than a bare number.
+  \item \textbf{Act on alignment confidence.} Treat a very low alignment score
+        as a candidate omission and report it as a distinct verdict from a
+        distortion (addresses L5).
+\end{enumerate}
+
+\subsection{Medium term}
+
+\begin{enumerate}[leftmargin=*, resume]
+  \item \textbf{Clinician-annotated validation.} Have speech-language
+        pathologists annotate a sample of phoneme instances and measure the
+        model's agreement with expert judgement, along with inter-annotator
+        agreement as an upper bound (addresses L1).
+  \item \textbf{Error typology.} Extend the binary verdict to distinguish
+        substitution, distortion and omission, which is what makes feedback
+        prescriptive rather than merely diagnostic.
+  \item \textbf{Speaker adaptation.} Calibrate the decision threshold, or
+        fine-tune the final layers, on a small enrolment sample from an
+        individual user, following the personalisation results reported for
+        disordered-speech recognition \cite{macdonald2021disordered}.
+  \item \textbf{Connected speech.} Extend from isolated words to phrases and
+        sentences, which introduces coarticulation, and to prosodic assessment.
+  \item \textbf{Domain robustness.} Quantify and reduce the gap between
+        studio-quality training recordings and consumer microphones through
+        augmentation with noise, reverberation and codec artefacts
+        (addresses L7).
+\end{enumerate}
+
+\subsection{Longer term}
+
+\begin{enumerate}[leftmargin=*, resume]
+  \item \textbf{Longitudinal tracking.} Persist analyses per user, with consent,
+        and surface progress over time on specific phoneme targets --- the single
+        most requested capability in therapy contexts and the one that would
+        most change the tool's role from screening to intervention support.
+  \item \textbf{Prescriptive feedback.} Map a flagged phoneme onto a targeted
+        exercise and a plain-language articulatory instruction, closing the loop
+        from detection to practice.
+  \item \textbf{Multilingual extension.} \texttt{espeak-ng} and the wav2vec2
+        aligner are both multilingual; the classifier is the language-specific
+        component, and cross-lingual transfer of the control-baseline labelling
+        strategy to a paired corpus in another language is a direct test of the
+        method's generality.
+  \item \textbf{Clinical study.} A trial with speakers with dysarthria measuring
+        usability, comprehensibility and any effect on practice volume or
+        outcome, which is the only way to establish whether the tool delivers
+        the benefit it is designed for (addresses L8).
+\end{enumerate}
+
+\section{Closing Remarks}
+\label{sec:conc-closing}
+
+The most instructive outcome of this project was not the model. It was the
+discovery that a labelling rule which is statistically unobjectionable ---
+``call the most deviant thirty per cent errors'' --- can be quietly and
+completely wrong, and that the wrongness is invisible in the training metrics
+and obvious the moment the system is shown a healthy speaker. The fix required
+no new architecture and no additional data: it required deciding that
+\emph{correct} means \emph{like a healthy speaker producing this sound}, and
+then enforcing that definition in the code.
+
+\systemName\ is a research prototype and its limitations are stated plainly in
+Section~\ref{sec:limitations}. It does not diagnose, it has not been validated
+against clinicians, and roughly two of every three sounds it flags may not be
+faults. What it does do is take a recording of a single word and say which
+sound, at which moment, deviated from clear speech --- which is a thing a person
+practising alone at home currently has no way to find out. Making that
+information available, on a phone, at no cost, seems a worthwhile place for the
+work to have arrived.

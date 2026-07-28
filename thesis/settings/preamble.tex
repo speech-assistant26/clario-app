@@ -1,0 +1,186 @@
+% ============================================================
+% PREAMBLE - packages, page geometry, styling, helper macros
+% Engine: pdfLaTeX (IPA rendered through the `tipa` package).
+% Build:  pdflatex -> bibtex -> pdflatex -> pdflatex
+% ============================================================
+
+% ---------- Encoding and fonts ----------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+\usepackage{tipa}          % International Phonetic Alphabet glyphs
+
+% ---------- Page geometry (typical binding margins) ----------
+\usepackage[a4paper,left=1.5in,right=1in,top=1in,bottom=1in]{geometry}
+
+% ---------- Spacing ----------
+\usepackage{setspace}
+\onehalfspacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 2pt minus 1pt}
+
+% ---------- Maths, tables, graphics ----------
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{tabularx}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+% ---------- Diagrams and plots (self-contained; no external images) ----------
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric,arrows.meta,positioning,fit,backgrounds,calc,matrix}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.17}
+\usepgfplotslibrary{groupplots}
+
+% ---------- Source-code listings ----------
+\usepackage{listings}
+
+% ---------- Headers / footers ----------
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \fancyfoot[C]{\thepage}%
+  \renewcommand{\headrulewidth}{0pt}%
+}
+
+% ---------- Chapter / section heading style ----------
+\usepackage[explicit]{titlesec}
+\titleformat{\chapter}[display]
+  {\normalfont\bfseries\centering}
+  {\MakeUppercase{\chaptertitlename}\ \thechapter}{12pt}
+  {\Large\MakeUppercase{#1}}
+\titlespacing*{\chapter}{0pt}{-20pt}{28pt}
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{1em}{#1}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{1em}{#1}
+\titleformat{\subsubsection}{\normalfont\normalsize\itshape}{\thesubsubsection}{1em}{#1}
+
+% ---------- Table of contents depth ----------
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{3}
+
+% ---------- Captions ----------
+\captionsetup{font=small,labelfont=bf,justification=centering}
+
+% ---------- Hyperlinks (load late) ----------
+\usepackage[hidelinks,breaklinks=true]{hyperref}
+
+% ============================================================
+% IPA SUPPORT
+% The phoneme inventory used in this thesis is written directly as
+% Unicode in the source; each symbol is mapped onto its `tipa`
+% equivalent so the document compiles with plain pdfLaTeX.
+% ============================================================
+% TIPA's *named* symbol commands are used throughout (rather than its
+% single-character shortcut codes), because the names are unambiguous and
+% stable across TIPA versions.
+\DeclareUnicodeCharacter{0251}{\textscripta}       % open back unrounded
+\DeclareUnicodeCharacter{0252}{\textturnscripta}   % open back rounded
+\DeclareUnicodeCharacter{0254}{\textopeno}         % open-mid back rounded
+\DeclareUnicodeCharacter{0259}{\textschwa}         % schwa
+\DeclareUnicodeCharacter{025A}{\textrhookschwa}    % rhotic schwa
+\DeclareUnicodeCharacter{025B}{\textepsilon}       % open-mid front unrounded
+\DeclareUnicodeCharacter{0261}{\textscriptg}       % script g
+\DeclareUnicodeCharacter{026A}{\textsci}           % near-close near-front
+\DeclareUnicodeCharacter{0279}{\textturnr}         % alveolar approximant
+\DeclareUnicodeCharacter{027E}{\textfishhookr}     % alveolar flap
+\DeclareUnicodeCharacter{0283}{\textesh}           % voiceless postalveolar fric.
+\DeclareUnicodeCharacter{028A}{\textupsilon}       % near-close near-back
+\DeclareUnicodeCharacter{028C}{\textturnv}         % open-mid back unrounded
+\DeclareUnicodeCharacter{0292}{\textyogh}          % voiced postalveolar fric.
+\DeclareUnicodeCharacter{0294}{\textglotstop}      % glottal stop
+\DeclareUnicodeCharacter{014B}{\ng}                % velar nasal
+\DeclareUnicodeCharacter{03B8}{\texttheta}         % voiceless dental fricative
+\DeclareUnicodeCharacter{00E6}{\ae}                % ash
+\DeclareUnicodeCharacter{02C8}{\textprimstress}    % primary stress
+\DeclareUnicodeCharacter{02CC}{\textsecstress}     % secondary stress
+\DeclareUnicodeCharacter{02D0}{\textlengthmark}    % length mark
+
+% Convenience wrapper so phonemes stand out consistently in running text.
+\newcommand{\ph}[1]{\mbox{/#1/}}
+
+% ============================================================
+% BREAKABLE MONOSPACE
+% \texttt never hyphenates, so long model names, file paths and
+% environment-variable names overflow the measure. \pth is a
+% url-style command: same typewriter look, but it may break after
+% "/", "-", "_" and ".". Its argument is verbatim, so underscores
+% are written literally (\pth{CLARIO_ERROR_THRESHOLD}).
+% Not usable inside a caption or other moving argument.
+% ============================================================
+\usepackage{url}
+\DeclareUrlCommand\pth{\urlstyle{tt}}
+\def\UrlBreaks{\do\/\do\-\do\_\do\.\do\+\do\=\do\:}
+\setlength{\Urlmuskip}{0mu plus 1mu}
+
+% ============================================================
+% LISTINGS STYLE (code appendices)
+% Code excerpts are kept ASCII-only so the listing engine never has to
+% typeset a Unicode glyph.
+% ============================================================
+\definecolor{codegray}{gray}{0.95}
+\definecolor{codegreen}{rgb}{0.0,0.45,0.15}
+\definecolor{codeblue}{rgb}{0.10,0.20,0.65}
+\definecolor{codemauve}{rgb}{0.45,0.10,0.45}
+
+\lstdefinestyle{thesisstyle}{
+  backgroundcolor=\color{codegray},
+  basicstyle=\ttfamily\scriptsize,
+  keywordstyle=\color{codeblue}\bfseries,
+  commentstyle=\itshape\color{codegreen},
+  stringstyle=\color{codemauve},
+  numberstyle=\tiny\color{gray},
+  numbers=left,
+  numbersep=8pt,
+  breaklines=true,
+  breakatwhitespace=false,
+  captionpos=b,
+  frame=single,
+  framesep=4pt,
+  showstringspaces=false,
+  columns=fullflexible,
+  keepspaces=true,
+  tabsize=4,
+  upquote=true,
+}
+\lstset{style=thesisstyle}
+\renewcommand{\lstlistingname}{Listing}
+
+% ============================================================
+% SHARED TIKZ STYLES FOR THE DESIGN DIAGRAMS
+% ============================================================
+\tikzset{
+  block/.style   = {rectangle, rounded corners=2pt, draw=black!70, fill=blue!5,
+                    text width=2.9cm, align=center, minimum height=1cm,
+                    font=\small, inner sep=4pt},
+  wideblock/.style = {block, text width=4.2cm},
+  data/.style    = {rectangle, draw=black!70, fill=green!6, text width=2.9cm,
+                    align=center, minimum height=0.9cm, font=\small},
+  decision/.style= {diamond, aspect=2, draw=black!70, fill=orange!12,
+                    align=center, font=\scriptsize, inner sep=1pt},
+  actor/.style   = {circle, draw=black!70, fill=gray!10, minimum size=0.9cm,
+                    font=\scriptsize, align=center},
+  arrow/.style   = {-{Stealth[length=2.6mm]}, thick, draw=black!70},
+  dashedarrow/.style = {-{Stealth[length=2.6mm]}, thick, dashed, draw=black!60},
+  lbl/.style     = {font=\scriptsize, midway, fill=white, inner sep=1.5pt},
+}
+
+% ============================================================
+% MISC
+% ============================================================
+\newcommand{\clario}{\textsc{Clario}}
+\renewcommand{\arraystretch}{1.15}
+\interfootnotelinepenalty=10000
+\hyphenpenalty=2000
+\tolerance=1500
