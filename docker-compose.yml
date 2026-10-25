@@ -11,6 +11,11 @@ services:
   backend:
     build: ./backend
     container_name: clario-backend
+    # Supabase URL/secret key + JWT secret live here (git-ignored). Optional: without
+    # it the app runs as before, just without accounts/history.
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
       CLARIO_ERROR_THRESHOLD: "0.50"
       CLARIO_DEVICE: "cpu"
@@ -33,20 +38,6 @@ services:
     ports:
       # Host 8080 is taken; serve the web app on 3000.
       - "3000:80"
-    restart: unless-stopped
-
-  # Optional: expose the app on a public HTTPS URL with no account/card.
-  # Enable with:  docker compose --profile share up -d
-  # Then read the https://<random>.trycloudflare.com link from its logs:
-  #   docker logs clario-tunnel | grep trycloudflare
-  # The link stays alive only while this machine + containers are running.
-  tunnel:
-    image: cloudflare/cloudflared:latest
-    container_name: clario-tunnel
-    profiles: ["share"]
-    depends_on:
-      - frontend
-    command: tunnel --no-autoupdate --url http://frontend:80
     restart: unless-stopped
 
 volumes:

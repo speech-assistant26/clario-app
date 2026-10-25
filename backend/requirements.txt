@@ -19,3 +19,8 @@ librosa==0.10.2.post1
 soundfile==0.12.1
 numpy==1.26.4
 scipy==1.13.1
+
+# --- History & accounts (Supabase, via its HTTPS REST API) ---
+httpx==0.28.1
+bcrypt==4.2.1
+PyJWT==2.10.1

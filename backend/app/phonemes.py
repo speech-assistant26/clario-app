@@ -8,6 +8,7 @@ phone vocabulary.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from functools import lru_cache
@@ -24,9 +25,15 @@ def espeak_available() -> bool:
 
 def word_to_phonemes(word: str) -> list[str]:
     """IPA phonemes for a single word, as a list of individual symbols."""
-    word = word.strip()
+    return list(_word_to_phonemes(word.strip()))
+
+
+# Cached: a sentence would otherwise spawn one espeak process per word on
+# every request, and practice words/sentences repeat a lot.
+@lru_cache(maxsize=4096)
+def _word_to_phonemes(word: str) -> tuple[str, ...]:
     if not word:
-        return []
+        return ()
     try:
         out = subprocess.run(
             ["espeak-ng", "-q", "--ipa", "-v", "en-us", word],
@@ -46,7 +53,17 @@ def word_to_phonemes(word: str) -> list[str]:
 
     for m in _STRESS_MARKS:
         out = out.replace(m, "")
-    return [ch for ch in out if ch.strip()]
+    return tuple(ch for ch in out if ch.strip())
+
+
+# A word = letters/digits, optionally joined by apostrophes ("don't", "it’s").
+# Punctuation is dropped so "Hello, world!" -> ["Hello", "world"].
+_WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*")
+
+
+def tokenize_sentence(text: str) -> list[str]:
+    """Split a sentence into the words that get scored individually."""
+    return _WORD_RE.findall(text)
 
 
 def transcript_to_phonemes(transcript: str) -> list[str]:

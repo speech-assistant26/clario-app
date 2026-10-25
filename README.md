@@ -108,6 +108,49 @@ so for phone testing use a tunnel (ngrok/Cloudflare) or run both over HTTPS.
 4. UI paints the waveform with red (error) / green (clear) spans, a clarity ring,
    and a per-phoneme breakdown with error-probability meters.
 
+## Word check vs. sentence check
+
+The toggle at the top of the practice card picks the mode (sent to
+`/api/analyze` as `mode=word|sentence`):
+
+- **Word check**: the whole target is scored as one unit, as before.
+- **Sentence check**: the sentence is split into words, aligned in one pass,
+  and each word gets its own roll-up. A word counts as **correct** when at least
+  `CLARIO_WORD_PASS_ACCURACY` (default 0.8) of its phonemes are clear **and**
+  Whisper didn't flag it as missing. Forced alignment always fits every target
+  word into the audio, so a skipped word could otherwise score as clear. The
+  result shows *N / M words correct*, and you can tap any word to see its
+  phoneme breakdown.
+
+## Accounts & history (Supabase)
+
+Optional. Without Supabase settings the app works as before, without sign-in.
+With them, users can create an account (username + password, bcrypt-hashed,
+JWT sessions), and every analysis they run while signed in is saved with its
+recording. The **History** view lists past attempts, re-opens the full result,
+replays the audio, and deletes attempts.
+
+The backend talks to Supabase over its HTTPS REST API (port 443 only), so it
+also works on hosts that block database ports, such as Hugging Face Spaces.
+
+One-time setup:
+
+1. Create a free project at https://supabase.com.
+2. **SQL Editor → New query**: paste [`backend/supabase/schema.sql`](backend/supabase/schema.sql) and run it.
+3. Create `backend/.env` (git-ignored; see `backend/.env.example`):
+
+```bash
+CLARIO_SUPABASE_URL=https://<project-ref>.supabase.co
+CLARIO_SUPABASE_SERVICE_KEY=sb_secret_...      # Project Settings -> API Keys -> secret key
+CLARIO_JWT_SECRET=<long random string>
+```
+
+`docker compose up` picks this file up automatically. The backend creates the
+private `recordings` storage bucket on startup. Each attempt is ~6 KB in the
+`attempts` table, plus ~32 KB per second of recording in Storage (free tier:
+500 MB database, 1 GB storage). Free projects pause after about a week without
+activity; un-pause them from the Supabase dashboard (no data is lost).
+
 ## Notes & limitations
 
 - The model was trained on **dysarthric vs. control** speech (UASpeech). It flags

@@ -58,6 +58,25 @@ huggingface-cli login          # paste the write token
   `https://<username>-clario.hf.space`
 - The page is served over HTTPS, so **microphone recording works**.
 
+## Accounts & history (Supabase)
+
+In the Space go to **Settings → Variables and secrets** and add three **secrets**
+(secrets, not variables: variables are publicly visible):
+
+| Name | Value |
+|---|---|
+| `CLARIO_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+| `CLARIO_SUPABASE_SERVICE_KEY` | the Supabase **secret** key |
+| `CLARIO_JWT_SECRET` | a long random string (keep it stable, or every user gets logged out) |
+
+This works on Spaces because the backend reaches Supabase over HTTPS: Spaces
+only allow outbound ports 80, 443 and 8080
+([HF docs](https://huggingface.co/docs/hub/spaces-overview#networking)), which is
+why a direct MongoDB/Postgres connection wouldn't. Without these secrets the
+Space runs normally, just without sign-in and history.
+
+Note also that HF now requires a paid plan to *create* Docker Spaces.
+
 ## Notes & tuning
 
 - **Cold start**: after the Space sleeps (free tier idles out), the next visit

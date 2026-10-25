@@ -70,13 +70,18 @@ uvicorn app.main:app --reload --port 8000
 - `error_threshold` — optional per-request override of the P(error) cutoff, clamped to
   `[CLARIO_MIN_ERROR_THRESHOLD, CLARIO_MAX_ERROR_THRESHOLD]` (0.30–0.70 by default).
 
-Before scoring, the request is rejected with `422` if:
-- the audio is too quiet or looks like background noise rather than speech (the
-  quality gate — see `CLARIO_MIN_RMS_DBFS` / `CLARIO_MAX_NOISE_FLATNESS`), or
-- a Whisper ASR pass thinks a completely different word was spoken (not a
-  pronunciation judge — just a sanity check that the right word was attempted).
+Before scoring, the request is rejected with `422` if the audio is too quiet or
+looks like background noise rather than speech (the quality gate — see
+`CLARIO_MIN_RMS_DBFS` / `CLARIO_MAX_NOISE_FLATNESS`).
 
-Otherwise returns per-phoneme verdicts, an overall clarity score, and a downsampled waveform for plotting.
+A Whisper ASR pass also sanity-checks that the target word was attempted at
+all (not a pronunciation judge — that's the phoneme classifier's job). If it
+thinks a different word was spoken, this does **not** block the request: the
+response still includes the full phoneme breakdown, plus a non-null
+`word_warning` string the client can show as a heads-up.
+
+Returns per-phoneme verdicts, an overall clarity score, an optional
+`word_warning`, and a downsampled waveform for plotting.
 
 ### `GET /api/health`
 Liveness + model/espeak/device/normalization status.

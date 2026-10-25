@@ -1,8 +1,10 @@
 import { useEffect, useRef } from "react";
 
-// Canvas waveform with per-phoneme spans shaded red (error) / green (ok),
-// and the phoneme symbol drawn above its span.
-export default function WaveformChart({ waveform, rate, phonemes, duration }) {
+// Canvas waveform with per-phoneme spans shaded red (error) / green (ok).
+// Word mode labels each phoneme above its span; sentence mode (when `words`
+// is given) labels words instead — phoneme labels would overlap — and
+// outlines the currently selected word.
+export default function WaveformChart({ waveform, rate, phonemes, duration, words, selectedWord }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -43,9 +45,33 @@ export default function WaveformChart({ waveform, rate, phonemes, duration }) {
     }
     ctx.stroke();
 
-    // Phoneme labels + boundaries.
     ctx.textAlign = "center";
     ctx.font = "600 13px ui-sans-serif, system-ui, sans-serif";
+
+    if (words?.length) {
+      // Word labels + boundaries.
+      for (const w of words) {
+        if (w.start == null) continue;
+        const x0 = xOf(w.start);
+        const x1 = xOf(w.end);
+        ctx.strokeStyle = "rgba(100,116,139,0.55)";
+        ctx.beginPath();
+        ctx.moveTo(x0, 0);
+        ctx.lineTo(x0, cssH);
+        ctx.stroke();
+        if (w.index === selectedWord) {
+          ctx.strokeStyle = "rgba(99,102,241,0.9)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x0 + 1, 1, Math.max(2, x1 - x0 - 2), cssH - 2);
+          ctx.lineWidth = 1;
+        }
+        ctx.fillStyle = w.correct === false ? "#fb7185" : "#4ade80";
+        ctx.fillText(w.word, (x0 + x1) / 2, 16, Math.max(12, x1 - x0 - 2));
+      }
+      return;
+    }
+
+    // Phoneme labels + boundaries.
     for (const p of phonemes) {
       const x0 = xOf(p.start);
       const x1 = xOf(p.end);
@@ -58,7 +84,7 @@ export default function WaveformChart({ waveform, rate, phonemes, duration }) {
       ctx.fillStyle = p.verdict === "ERROR" ? "#fb7185" : "#4ade80";
       ctx.fillText(p.phoneme, cx, 16);
     }
-  }, [waveform, rate, phonemes, duration]);
+  }, [waveform, rate, phonemes, duration, words, selectedWord]);
 
   return <canvas ref={canvasRef} className="waveform" aria-label="Waveform with phoneme spans" />;
 }

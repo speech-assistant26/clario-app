@@ -75,6 +75,28 @@ class Settings(BaseSettings):
     # different word rather than a mispronunciation of the target.
     word_match_threshold: float = 0.45
 
+    # --- Sentence mode ---------------------------------------------------------
+    # Longest sentence (in words) accepted in sentence mode.
+    max_sentence_words: int = 30
+    # A word counts as "correct" when at least this fraction of its phonemes
+    # are clear. 0.8 -> words of <=4 phonemes must be perfect, longer words may
+    # have one flagged phoneme (one-off classifier noise shouldn't fail a word).
+    word_pass_accuracy: float = 0.8
+
+    # --- History & accounts (Supabase) ---------------------------------------
+    # Leave unset to run without accounts/history (analysis still works).
+    # Project URL, e.g. https://abcdefghijkl.supabase.co
+    supabase_url: str | None = None
+    # SECRET key (sb_secret_... or legacy service_role). Server-side only -
+    # never ship it to the browser.
+    supabase_service_key: str | None = None
+    # Secret used to sign login tokens. MUST be set (and kept stable) whenever
+    # Supabase is configured, otherwise everyone is logged out on every restart.
+    jwt_secret: str | None = None
+    jwt_expire_days: int = 7
+    # Keep each attempt's recording (Supabase Storage) so users can replay it later.
+    store_audio: bool = True
+
     # --- Normalization fallback ----------------------------------------------
     # Used ONLY when the .npz is absent. If both are None we fall back to
     # per-clip z-scoring at inference time (functional, slightly less accurate).

@@ -1,17 +1,32 @@
 import { useEffect, useRef, useState } from "react";
-import { analyze, getHealth } from "./lib/api.js";
+import { analyze, AUTH_EXPIRED_EVENT, getHealth, getMe, getToken, setToken } from "./lib/api.js";
 import { Recorder, toWav16k } from "./lib/audio.js";
-import WaveformChart from "./components/WaveformChart.jsx";
-import PhonemeList from "./components/PhonemeList.jsx";
-import ScoreRing from "./components/ScoreRing.jsx";
+import ResultView from "./components/ResultView.jsx";
+import HistoryView from "./components/HistoryView.jsx";
+import AuthDialog from "./components/AuthDialog.jsx";
 import Logo from "./components/Logo.jsx";
 import ThemeToggle, { useTheme } from "./components/ThemeToggle.jsx";
 import ThresholdSlider, { DEFAULT_THRESHOLD } from "./components/ThresholdSlider.jsx";
 
-const SUGGESTED = ["hello", "water", "yesterday", "computer", "beautiful", "seven", "purple", "animal"];
+const SUGGESTED = {
+  word: ["hello", "water", "yesterday", "computer", "beautiful", "seven", "purple", "animal"],
+  sentence: [
+    "The quick brown fox jumps over the lazy dog",
+    "She sells seashells by the seashore",
+    "I would like a glass of water",
+    "Please call me tomorrow morning",
+    "The weather is beautiful today",
+  ],
+};
+
+const MODE_COPY = {
+  word: { label: "Word to practise", placeholder: "Type any word…", noun: "word" },
+  sentence: { label: "Sentence to practise", placeholder: "Type a sentence…", noun: "sentence" },
+};
 
 export default function App() {
-  const [word, setWord] = useState("hello");
+  const [mode, setMode] = useState("word"); // word | sentence
+  const [texts, setTexts] = useState({ word: "hello", sentence: SUGGESTED.sentence[1] });
   const [status, setStatus] = useState("idle"); // idle | recording | processing
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
@@ -19,14 +34,50 @@ export default function App() {
   const [audioUrl, setAudioUrl] = useState("");
   const [threshold, setThreshold] = useState(DEFAULT_THRESHOLD);
   const [theme, setTheme] = useTheme();
+  const [user, setUser] = useState(null);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [view, setView] = useState("practice"); // practice | history
 
   const recorderRef = useRef(null);
+  const text = texts[mode];
+  const copy = MODE_COPY[mode];
 
   useEffect(() => {
     getHealth()
       .then(setHealth)
       .catch(() => setHealth({ status: "down" }));
+    if (getToken()) getMe().then(setUser).catch(() => setUser(null));
+
+    const onExpired = () => {
+      setUser(null);
+      setView("practice");
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
   }, []);
+
+  function setText(value) {
+    setTexts((t) => ({ ...t, [mode]: value }));
+  }
+
+  function switchMode(next) {
+    if (next === mode || status !== "idle") return;
+    setMode(next);
+    setResult(null);
+    setError("");
+  }
+
+  function handleAuthed({ token, user }) {
+    setToken(token);
+    setUser(user);
+    setAuthOpen(false);
+  }
+
+  function signOut() {
+    setToken(null);
+    setUser(null);
+    setView("practice");
+  }
 
   async function submit(wavBlob) {
     setStatus("processing");
@@ -34,7 +85,7 @@ export default function App() {
     try {
       if (audioUrl) URL.revokeObjectURL(audioUrl);
       setAudioUrl(URL.createObjectURL(wavBlob));
-      const data = await analyze(wavBlob, word.trim(), threshold);
+      const data = await analyze(wavBlob, text.trim(), threshold, mode);
       setResult(data);
     } catch (e) {
       setError(e.message || "Something went wrong.");
@@ -46,7 +97,7 @@ export default function App() {
 
   async function handleRecord() {
     setError("");
-    if (!word.trim()) return setError("Enter a word to practise first.");
+    if (!text.trim()) return setError(`Enter a ${copy.noun} to practise first.`);
 
     if (status === "recording") {
       const blob = await recorderRef.current.stop();
@@ -73,7 +124,7 @@ export default function App() {
   async function handleUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!word.trim()) return setError("Enter a word to practise first.");
+    if (!text.trim()) return setError(`Enter a ${copy.noun} to practise first.`);
     try {
       const wav = await toWav16k(file);
       await submit(wav);
@@ -85,6 +136,7 @@ export default function App() {
 
   const busy = status === "processing";
   const recording = status === "recording";
+  const historyAvailable = health?.history_enabled;
 
   return (
     <div className="app">
@@ -98,108 +150,152 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <HealthDot health={health} />
+          {historyAvailable &&
+            (user ? (
+              <>
+                <button
+                  type="button"
+                  className={`nav-btn ${view === "history" ? "active" : ""}`}
+                  onClick={() => setView(view === "history" ? "practice" : "history")}
+                  disabled={status !== "idle"}
+                >
+                  {view === "history" ? "Practise" : "History"}
+                </button>
+                <button type="button" className="nav-btn" onClick={signOut} title="Sign out">
+                  {user.username} · Sign out
+                </button>
+              </>
+            ) : (
+              <button type="button" className="nav-btn" onClick={() => setAuthOpen(true)}>
+                Sign in
+              </button>
+            ))}
           <ThemeToggle theme={theme} onChange={setTheme} />
         </div>
       </header>
 
       <main className="container">
-        <section className="card prompt-card">
-          <label className="field-label" htmlFor="word">Word to practise</label>
-          <input
-            id="word"
-            className="word-input"
-            value={word}
-            onChange={(e) => setWord(e.target.value)}
-            placeholder="Type any word…"
-            autoComplete="off"
-            spellCheck="false"
-          />
-          <div className="chips">
-            {SUGGESTED.map((w) => (
-              <button
-                key={w}
-                className={`chip ${w === word ? "active" : ""}`}
-                onClick={() => setWord(w)}
-                type="button"
-              >
-                {w}
-              </button>
-            ))}
-          </div>
+        {view === "history" && user ? (
+          <HistoryView />
+        ) : (
+          <>
+            <section className="card prompt-card">
+              <div className="segmented mode-toggle" role="tablist" aria-label="Practice mode">
+                {["word", "sentence"].map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === m}
+                    className={mode === m ? "active" : ""}
+                    onClick={() => switchMode(m)}
+                    disabled={status !== "idle"}
+                  >
+                    {m === "word" ? "Word check" : "Sentence check"}
+                  </button>
+                ))}
+              </div>
 
-          <ThresholdSlider value={threshold} onChange={setThreshold} />
+              <label className="field-label" htmlFor="target">{copy.label}</label>
+              {mode === "word" ? (
+                <input
+                  id="target"
+                  className="word-input"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder={copy.placeholder}
+                  autoComplete="off"
+                  spellCheck="false"
+                />
+              ) : (
+                <textarea
+                  id="target"
+                  className="word-input sentence-input"
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                  placeholder={copy.placeholder}
+                  rows={2}
+                  spellCheck="false"
+                />
+              )}
+              <div className="chips">
+                {SUGGESTED[mode].map((w) => (
+                  <button
+                    key={w}
+                    className={`chip ${w === text ? "active" : ""}`}
+                    onClick={() => setText(w)}
+                    type="button"
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
 
-          <div className="actions">
-            <button
-              className={`record-btn ${recording ? "recording" : ""}`}
-              onClick={handleRecord}
-              disabled={busy}
-              type="button"
-            >
-              {recording ? "◼ Stop & analyse" : busy ? "Analysing…" : "🎙 Record"}
-            </button>
+              <ThresholdSlider value={threshold} onChange={setThreshold} />
 
-            <label className="upload-btn">
-              ⤴ Upload audio
-              <input type="file" accept="audio/*" onChange={handleUpload} disabled={busy} hidden />
-            </label>
-          </div>
+              <div className="actions">
+                <button
+                  className={`record-btn ${recording ? "recording" : ""}`}
+                  onClick={handleRecord}
+                  disabled={busy}
+                  type="button"
+                >
+                  {recording ? "◼ Stop & analyse" : busy ? "Analysing…" : "🎙 Record"}
+                </button>
 
-          {recording && <p className="hint pulse">Recording… say “{word}”, then press stop.</p>}
-          {busy && <p className="hint">Aligning phonemes and scoring… first run may take a moment.</p>}
-          {error && <p className="error">{error}</p>}
-        </section>
+                <label className="upload-btn">
+                  ⤴ Upload audio
+                  <input type="file" accept="audio/*" onChange={handleUpload} disabled={busy} hidden />
+                </label>
+              </div>
 
-        {result && (
-          <section className="card result-card">
-            {result.warning && (
-              <p className="warning" role="status">
-                <span className="warning-icon" aria-hidden="true">⚠</span>
-                <span>{result.warning}</span>
-              </p>
+              {recording && <p className="hint pulse">Recording… say “{text}”, then press stop.</p>}
+              {busy && <p className="hint">Aligning phonemes and scoring… first run may take a moment.</p>}
+              {error && <p className="error">{error}</p>}
+              {historyAvailable && !user && (
+                <p className="hint small">
+                  <button type="button" className="link-btn" onClick={() => setAuthOpen(true)}>
+                    Sign in
+                  </button>{" "}
+                  to keep a history of your attempts.
+                </p>
+              )}
+            </section>
+
+            {result && (
+              <ResultView result={result} audioUrl={audioUrl}>
+                {result.attempt_id && <p className="saved-note">✓ Saved to your history</p>}
+              </ResultView>
             )}
 
-            <div className="result-head">
-              <ScoreRing
-                accuracy={result.accuracy}
-                nErrors={result.n_errors}
-                nPhonemes={result.n_phonemes}
-              />
-              <div className="result-meta">
-                <h2>“{result.target_word}”</h2>
-                <p className="muted">
-                  {result.n_phonemes} phonemes · {result.n_errors} flagged ·{" "}
-                  {result.duration_sec}s · threshold {result.error_threshold}
+            {!result && !busy && (
+              <section className="card empty-card">
+                <p>
+                  {mode === "word" ? (
+                    <>
+                      Pick a word, tap <strong>Record</strong>, and say it clearly. Clario aligns
+                      your speech to the word’s phonemes and highlights any sounds that came out
+                      unclear.
+                    </>
+                  ) : (
+                    <>
+                      Type a sentence, tap <strong>Record</strong>, and read it at a natural pace.
+                      Clario scores every word, tells you how many you got right, and lets you
+                      drill into the sounds of each one.
+                    </>
+                  )}
                 </p>
-                {audioUrl && <audio className="player" controls src={audioUrl} />}
-              </div>
-            </div>
-
-            <WaveformChart
-              waveform={result.waveform}
-              rate={result.waveform_rate}
-              phonemes={result.phonemes}
-              duration={result.duration_sec}
-            />
-
-            <h3 className="section-title">Phoneme breakdown</h3>
-            <PhonemeList phonemes={result.phonemes} />
-          </section>
-        )}
-
-        {!result && !busy && (
-          <section className="card empty-card">
-            <p>
-              Pick a word, tap <strong>Record</strong>, and say it clearly. Clario aligns your
-              speech to the word’s phonemes and highlights any sounds that came out unclear.
-            </p>
-          </section>
+              </section>
+            )}
+          </>
         )}
       </main>
 
       <footer className="footer">
         <span>Clario · Speech clarity coach</span>
       </footer>
+
+      {authOpen && <AuthDialog onAuthed={handleAuthed} onClose={() => setAuthOpen(false)} />}
     </div>
   );
 }
@@ -213,7 +309,8 @@ function HealthDot({ health }) {
     ? "Backend unreachable"
     : warn
     ? `Degraded: espeak=${health.espeak_available}, model=${health.model_loaded}`
-    : `Ready · ${health.device} · ${health.normalization}`;
+    : `Ready · ${health.device} · ${health.normalization}` +
+      (health.history_enabled ? ` · db ${health.db_connected ? "connected" : "unreachable"}` : "");
   return (
     <div className={`health ${cls}`} title={title}>
       <span className="health-dot" />

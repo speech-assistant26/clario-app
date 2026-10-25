@@ -115,36 +115,51 @@ class PhonemeErrorPipeline:
             logits = self._align_model(waveform_t.to(self.device)).logits
             return torch.log_softmax(logits, dim=-1)
 
-    def align(self, wave: np.ndarray, transcript: str) -> list[tuple[str, float, float, float]]:
-        """Return [(phoneme, start_sec, end_sec, score), ...] for the waveform."""
+    def align(
+        self, wave: np.ndarray, words: list[str]
+    ) -> list[tuple[str, float, float, float, int]]:
+        """
+        Forced-align the waveform to the phonemes of `words` (one alignment pass
+        over the whole utterance). Returns
+        [(phoneme, start_sec, end_sec, score, word_index), ...].
+        """
         import torchaudio
         torch = self._torch
         if len(wave) < self.s.sample_rate * 0.05:
             raise ValueError("Audio too short after trimming (<50ms). Record a bit longer.")
 
-        phonemes = transcript_to_phonemes(transcript)
-        tokens, kept = [], []
-        for p in phonemes:
-            if p in self._vocab:
-                tokens.append(self._vocab[p])
-                kept.append(p)
+        tokens, kept, owners = [], [], []
+        for wi, word in enumerate(words):
+            for p in transcript_to_phonemes(word):
+                if p in self._vocab:
+                    tokens.append(self._vocab[p])
+                    kept.append(p)
+                    owners.append(wi)
         if not tokens:
-            raise ValueError(f"No valid phonemes for '{transcript}'.")
+            raise ValueError(f"No valid phonemes for '{' '.join(words)}'.")
 
         waveform_t = torch.tensor(wave).unsqueeze(0)
         emission = self._emission(waveform_t)
         targets = torch.tensor([tokens], dtype=torch.int32, device=self.device)
-        aligned, scores = torchaudio.functional.forced_align(
-            emission, targets, blank=self._blank_id
-        )
+        try:
+            aligned, scores = torchaudio.functional.forced_align(
+                emission, targets, blank=self._blank_id
+            )
+        except RuntimeError as exc:
+            # CTC needs at least one audio frame (~20 ms) per phoneme; a long
+            # sentence over a very short clip can't be aligned.
+            raise ValueError(
+                "The recording is too short for this text. Say the whole "
+                f"{'sentence' if len(words) > 1 else 'word'} at a natural pace."
+            ) from exc
         aligned, scores = aligned[0], scores[0].exp()
         spans = torchaudio.functional.merge_tokens(aligned, scores)
 
         num_frames = emission.size(1)
         ratio = len(wave) / num_frames / self.s.sample_rate
         return [
-            (p, float(sp.start * ratio), float(sp.end * ratio), float(sp.score))
-            for sp, p in zip(spans, kept[: len(spans)])
+            (p, float(sp.start * ratio), float(sp.end * ratio), float(sp.score), wi)
+            for sp, p, wi in zip(spans, kept, owners)
         ]
 
     # ---- feature extraction ------------------------------------------------
@@ -176,12 +191,12 @@ class PhonemeErrorPipeline:
         return (mels - mean) / std
 
     # ---- target-word verification (Whisper) --------------------------------
-    def transcribe(self, wave: np.ndarray) -> str:
+    def transcribe(self, wave: np.ndarray, max_new_tokens: int = 30) -> str:
         torch = self._torch
         inputs = self._whisper_processor(wave, sampling_rate=self.s.sample_rate, return_tensors="pt")
         input_features = inputs.input_features.to(self.device)
         with torch.inference_mode():
-            ids = self._whisper_model.generate(input_features, max_new_tokens=30)
+            ids = self._whisper_model.generate(input_features, max_new_tokens=max_new_tokens)
         return self._whisper_processor.batch_decode(ids, skip_special_tokens=True)[0].strip()
 
     def _normalize_for_match(self, text: str) -> str:
@@ -210,26 +225,67 @@ class PhonemeErrorPipeline:
         matched = similarity >= self.s.word_match_threshold or target in heard or (heard and heard in target)
         return {"checked": True, "matched": matched, "heard": heard_raw, "similarity": round(similarity, 3)}
 
+    def verify_sentence(self, wave: np.ndarray, words: list[str]) -> dict:
+        """
+        Sentence-mode counterpart of verify_word: which target words does
+        Whisper hear at all? Returns {"checked": bool, "heard": [bool, ...]}
+        with one flag per target word. A word counts as heard if it lines up
+        with a transcribed word exactly, or fuzzily (a mispronunciation is
+        still "heard" - only skipped/replaced words are not).
+        """
+        if not self.s.enable_word_verification or not self.whisper_loaded:
+            return {"checked": False, "heard": [None] * len(words)}
+
+        heard_words = self._normalize_for_match(
+            self.transcribe(wave, max_new_tokens=4 * len(words) + 20)
+        ).split()
+        targets = [self._normalize_for_match(w) for w in words]
+        heard = [False] * len(words)
+
+        matcher = difflib.SequenceMatcher(None, targets, heard_words, autojunk=False)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == "equal":
+                for i in range(i1, i2):
+                    heard[i] = True
+            elif tag == "replace":
+                # Same slot in both sequences: accept close-enough words.
+                for i in range(i1, i2):
+                    heard[i] = any(
+                        difflib.SequenceMatcher(None, targets[i], heard_words[j]).ratio()
+                        >= self.s.word_match_threshold
+                        for j in range(j1, j2)
+                    )
+        return {"checked": True, "heard": heard}
+
     # ---- top-level ---------------------------------------------------------
     def analyze(
-        self, wave: np.ndarray, target_word: str, error_threshold: float | None = None
+        self,
+        wave: np.ndarray,
+        target_word: str,
+        error_threshold: float | None = None,
+        words: list[str] | None = None,
     ) -> list[dict]:
-        """Per-phoneme results for a pre-trimmed waveform + its target word."""
+        """
+        Per-phoneme results for a pre-trimmed waveform + its target text.
+        `words` splits the text into separately-scored words (sentence mode);
+        by default the whole target is one unit (word mode). Each result
+        carries the `word_index` it belongs to.
+        """
         self.load()
-        segments = self.align(wave, target_word)
+        segments = self.align(wave, words or [target_word])
         if not segments:
             return []
 
         threshold = error_threshold if error_threshold is not None else self.s.error_threshold
 
         # v8: one mel per phoneme, classified in a single batched predict.
-        mels = np.stack([self.crop_mel(wave, s, e) for _, s, e, _ in segments])
+        mels = np.stack([self.crop_mel(wave, s, e) for _, s, e, _, _ in segments])
         mels = mels[..., np.newaxis]                    # (n_phon, n_mels, frames, 1)
         mels = self._normalize(mels)
         probs = self._clf.predict(mels, verbose=0)[:, 1]  # P(error) per phoneme
 
         results: list[dict] = []
-        for (phon, s, e, align_sc), p in zip(segments, probs):
+        for (phon, s, e, align_sc, wi), p in zip(segments, probs):
             p = float(p)
             verdict = "ERROR" if p >= threshold else "ok"
             results.append({
@@ -239,8 +295,43 @@ class PhonemeErrorPipeline:
                 "verdict": verdict,
                 "error_prob": round(p, 4),
                 "align_score": round(align_sc, 4),
+                "word_index": wi,
             })
         return results
+
+
+def summarize_words(
+    words: list[str],
+    phonemes: list[dict],
+    pass_accuracy: float,
+    heard: list[bool | None] | None = None,
+) -> list[dict]:
+    """
+    Roll per-phoneme verdicts up into one result per word. A word is "correct"
+    when its phoneme clarity >= pass_accuracy AND Whisper didn't flag it as
+    missing (forced alignment always squeezes every target word into the
+    audio, so a skipped word can otherwise score as clear). Words with no
+    alignable phonemes are reported with correct=None (not scored).
+    """
+    heard = heard or [None] * len(words)
+    out = []
+    for wi, word in enumerate(words):
+        mine = [p for p in phonemes if p["word_index"] == wi]
+        n = len(mine)
+        n_err = sum(1 for p in mine if p["verdict"] == "ERROR")
+        acc = round(1 - n_err / n, 4) if n else None
+        out.append({
+            "word": word,
+            "index": wi,
+            "start": mine[0]["start"] if mine else None,
+            "end": mine[-1]["end"] if mine else None,
+            "n_phonemes": n,
+            "n_errors": n_err,
+            "accuracy": acc,
+            "correct": (acc >= pass_accuracy and heard[wi] is not False) if acc is not None else None,
+            "heard": heard[wi],
+        })
+    return out
 
 
 # Process-wide singleton.

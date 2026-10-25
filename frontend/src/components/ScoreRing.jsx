@@ -1,5 +1,6 @@
-// Circular clarity-score gauge (0–100%), colored by band.
-export default function ScoreRing({ accuracy, nErrors, nPhonemes }) {
+// Circular score gauge (0–100%), colored by band. Defaults to phoneme clarity;
+// sentence mode passes label="words" and its own caption.
+export default function ScoreRing({ accuracy, nErrors, nPhonemes, label = "clarity", caption }) {
   const pct = Math.round(accuracy * 100);
   const r = 52;
   const c = 2 * Math.PI * r;
@@ -25,11 +26,11 @@ export default function ScoreRing({ accuracy, nErrors, nPhonemes }) {
           {pct}%
         </text>
         <text x="65" y="82" textAnchor="middle" className="ring-label">
-          clarity
+          {label}
         </text>
       </svg>
       <p className="score-sub">
-        {nPhonemes - nErrors}/{nPhonemes} phonemes clear
+        {caption ?? `${nPhonemes - nErrors}/${nPhonemes} phonemes clear`}
       </p>
     </div>
   );

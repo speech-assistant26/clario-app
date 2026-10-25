@@ -2,31 +2,43 @@
 Clario API — FastAPI service wrapping the phoneme-error-detection pipeline.
 
 Endpoints:
-  GET  /api/health          liveness + model/espeak status
-  POST /api/analyze         audio file + target word -> per-phoneme verdicts
+  GET  /api/health          liveness + model/espeak/db status
+  POST /api/analyze         audio file + target word/sentence -> per-phoneme (+ per-word) verdicts
+  /api/auth/*               accounts           (see auth.py, needs Supabase)
+  /api/history/*            practice history   (see history.py, needs Supabase)
 """
 from __future__ import annotations
 
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from . import auth, db, history
 from .audio import assess_quality, downsample_for_plot, load_and_trim
 from .config import get_settings
-from .phonemes import espeak_available
-from .pipeline import get_pipeline
-from .schemas import AnalyzeResponse, HealthResponse, PhonemeResult, WordCheck
+from .phonemes import espeak_available, tokenize_sentence
+from .pipeline import get_pipeline, summarize_words
+from .schemas import AnalyzeResponse, HealthResponse, Mode, PhonemeResult, WordResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("clario")
+# httpx logs every Supabase request at INFO; keep only its warnings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 settings = get_settings()
+
+# Inference runs in a worker thread (so the event loop stays responsive), but
+# one analysis at a time: TF/torch already use every core, and Keras predict
+# isn't guaranteed thread-safe.
+_inference_lock = threading.Lock()
 
 
 @asynccontextmanager
@@ -40,6 +52,15 @@ async def lifespan(app: FastAPI):
         log.info("Models ready.")
     except Exception as exc:  # noqa: BLE001
         log.warning("Model warm-up failed (will retry on first request): %s", exc)
+
+    if db.history_enabled():
+        try:
+            db.ensure_setup()
+            log.info("History enabled (Supabase connected).")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Supabase not ready — history will fail until it is: %s", exc)
+    else:
+        log.info("History disabled (CLARIO_SUPABASE_URL / CLARIO_SUPABASE_SERVICE_KEY not set).")
     yield
 
 
@@ -53,6 +74,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
+app.include_router(history.router)
+
 
 @app.get("/api/health", response_model=HealthResponse)
 def health() -> HealthResponse:
@@ -65,18 +89,109 @@ def health() -> HealthResponse:
         espeak_available=espeak_available(),
         device=pipe.device,
         normalization=pipe.normalization_desc,
+        history_enabled=db.history_enabled(),
+        db_connected=db.ping(),
+    )
+
+
+def _verify(pipeline, wave, target: str, words: list[str], mode: Mode) -> tuple[str | None, list]:
+    """Whisper sanity check -> (warning or None, per-word heard flags)."""
+    try:
+        if mode == "sentence":
+            v = pipeline.verify_sentence(wave, words)
+            missing = [w for w, h in zip(words, v["heard"]) if h is False]
+            if v["checked"] and len(missing) > len(words) / 2:
+                return (
+                    "Most of this sentence wasn't recognised. The breakdown below still "
+                    "assumes the target text — try again if you said something else.",
+                    v["heard"],
+                )
+            return None, v["heard"]
+
+        v = pipeline.verify_word(wave, target)
+        if v["checked"] and not v["matched"]:
+            return (
+                f"This doesn't sound like “{target}”. "
+                "The breakdown below still assumes the target word — try again if that's not right.",
+                [None],
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Word verification failed, continuing without it: %s", exc)
+    return None, [None] * len(words)
+
+
+def _run_analysis(
+    data: bytes, target: str, words: list[str], mode: Mode, error_threshold: float | None
+) -> AnalyzeResponse:
+    """Blocking part of /analyze (decode -> quality gate -> verify -> classify)."""
+    try:
+        wave = load_and_trim(data, settings.sample_rate, settings.trim_top_db)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail=f"Could not decode audio: {exc}") from exc
+
+    if settings.enable_quality_gate:
+        reason = assess_quality(wave, settings.min_rms_dbfs, settings.max_noise_flatness)
+        if reason:
+            raise HTTPException(status_code=422, detail=reason)
+
+    pipeline = get_pipeline()
+    with _inference_lock:
+        word_warning, heard = _verify(pipeline, wave, target, words, mode)
+        try:
+            results = pipeline.analyze(
+                wave, target, error_threshold=error_threshold,
+                words=words if mode == "sentence" else None,
+            )
+        except ValueError as exc:                 # bad input (too short / no phonemes)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:                # environment problem (espeak/model)
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:                   # noqa: BLE001
+            log.exception("Analysis failed")
+            raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+
+    if not results:
+        raise HTTPException(
+            status_code=422,
+            detail="No phonemes could be aligned. Check the target text and recording.",
+        )
+
+    word_rows = summarize_words(words, results, settings.word_pass_accuracy, heard)
+    scored = [w for w in word_rows if w["correct"] is not None]
+    n_words_correct = sum(1 for w in scored if w["correct"])
+    n_errors = sum(1 for r in results if r["verdict"] == "ERROR")
+    n_phonemes = len(results)
+
+    return AnalyzeResponse(
+        mode=mode,
+        target_word=target,
+        phonemes=[PhonemeResult(**r) for r in results],
+        n_errors=n_errors,
+        n_phonemes=n_phonemes,
+        accuracy=round(1 - n_errors / n_phonemes, 4) if n_phonemes else 0.0,
+        words=[WordResult(**w) for w in word_rows],
+        n_words=len(scored),
+        n_words_correct=n_words_correct,
+        word_accuracy=round(n_words_correct / len(scored), 4) if scored else None,
+        duration_sec=round(len(wave) / settings.sample_rate, 3),
+        error_threshold=error_threshold if error_threshold is not None else settings.error_threshold,
+        word_warning=word_warning,
+        waveform=downsample_for_plot(wave),
+        waveform_rate=settings.sample_rate,
     )
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze(
-    audio: UploadFile = File(..., description="Recording of the spoken word (WAV preferred)"),
-    target_word: str = Form(..., description="The word/phrase the speaker was asked to say"),
+    audio: UploadFile = File(..., description="Recording of the spoken word/sentence (WAV preferred)"),
+    target_word: str = Form(..., description="The word (or sentence) the speaker was asked to say"),
+    mode: Mode = Form("word", description='"word" (default) or "sentence" (adds per-word scoring)'),
     error_threshold: float | None = Form(
         None, description="Optional per-request override of the error-probability cutoff"
     ),
+    user: dict | None = Depends(auth.optional_user),
 ) -> AnalyzeResponse:
-    target_word = target_word.strip()
+    target_word = " ".join(target_word.split())
     if not target_word:
         raise HTTPException(status_code=422, detail="target_word must not be empty.")
     if not espeak_available():
@@ -84,6 +199,18 @@ async def analyze(
             status_code=503,
             detail="espeak-ng is not installed on the server; cannot derive phonemes.",
         )
+
+    if mode == "sentence":
+        words = tokenize_sentence(target_word)
+        if not words:
+            raise HTTPException(status_code=422, detail="The sentence has no words to score.")
+        if len(words) > settings.max_sentence_words:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Sentences are limited to {settings.max_sentence_words} words.",
+            )
+    else:
+        words = [target_word]
 
     if error_threshold is not None:
         error_threshold = max(
@@ -97,74 +224,17 @@ async def analyze(
     if len(data) > max_bytes:
         raise HTTPException(status_code=413, detail=f"Audio exceeds {settings.max_upload_mb} MB.")
 
-    try:
-        wave = load_and_trim(data, settings.sample_rate, settings.trim_top_db)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail=f"Could not decode audio: {exc}") from exc
+    result = await run_in_threadpool(_run_analysis, data, target_word, words, mode, error_threshold)
 
-    if settings.enable_quality_gate:
-        reason = assess_quality(wave, settings.min_rms_dbfs, settings.max_noise_flatness)
-        if reason:
-            raise HTTPException(status_code=422, detail=reason)
-
-    pipeline = get_pipeline()
-
-    try:
-        verification = pipeline.verify_word(wave, target_word)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Word verification failed, continuing without it: %s", exc)
-        verification = {"checked": False, "matched": True, "heard": None, "similarity": None}
-
-    # A word mismatch is ADVISORY, not fatal. Blocking the analysis here was the
-    # wrong call for the target population: severely dysarthric speech is exactly
-    # what a small ASR model mis-transcribes, so a hard 422 withheld feedback from
-    # the users who need it most. We now warn and analyse anyway — the phoneme
-    # verdicts stand on their own, and the user decides what to make of them.
-    warning: str | None = None
-    if verification["checked"] and not verification["matched"]:
-        heard = verification.get("heard")
-        warning = (
-            f"This doesn’t sound like “{target_word}”"
-            + (f" — it sounded more like “{heard}”." if heard else ".")
-            + " The results below may be less reliable; re-record if you meant to"
-            " say a different word."
-        )
-        log.info("Word mismatch (advisory): target=%r heard=%r similarity=%s",
-                 target_word, heard, verification.get("similarity"))
-
-    try:
-        results = pipeline.analyze(wave, target_word, error_threshold=error_threshold)
-    except ValueError as exc:                 # bad input (too short / no phonemes)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except RuntimeError as exc:                # environment problem (espeak/model)
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:                   # noqa: BLE001
-        log.exception("Analysis failed")
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
-
-    if not results:
-        raise HTTPException(
-            status_code=422,
-            detail="No phonemes could be aligned. Check the target word and recording.",
-        )
-
-    n_errors = sum(1 for r in results if r["verdict"] == "ERROR")
-    n_phonemes = len(results)
-    duration = round(len(wave) / settings.sample_rate, 3)
-
-    return AnalyzeResponse(
-        target_word=target_word,
-        phonemes=[PhonemeResult(**r) for r in results],
-        n_errors=n_errors,
-        n_phonemes=n_phonemes,
-        accuracy=round(1 - n_errors / n_phonemes, 4) if n_phonemes else 0.0,
-        duration_sec=duration,
-        error_threshold=error_threshold if error_threshold is not None else settings.error_threshold,
-        waveform=downsample_for_plot(wave),
-        waveform_rate=settings.sample_rate,
-        warning=warning,
-        word_check=WordCheck(**verification),
-    )
+    if user is not None:
+        # Saving is best-effort: a DB hiccup shouldn't throw away the result.
+        try:
+            result.attempt_id = await run_in_threadpool(
+                history.save_attempt, user, result, data, audio.content_type or "audio/wav"
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Could not save attempt to history: %s", exc)
+    return result
 
 
 # --- Single-deployment mode -------------------------------------------------
